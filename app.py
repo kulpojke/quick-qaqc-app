@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Local map-feature QAQC annotation app."""
+"""Local map-feature annotation app."""
 
 from __future__ import annotations
 
@@ -16,13 +16,15 @@ from urllib.parse import parse_qs, urlparse
 
 DEFAULT_BUILDINGS_PATH = Path("../damage-map-web-map/data/buildings_h3.geojson")
 DEFAULT_ANNOTATIONS_PATH = Path("data/qaqc/annotations_local.csv")
-DEFAULT_LABEL_FIELD = "predicted_class"
+DEFAULT_LABEL_FIELD = ""
+DEFAULT_ANNOTATION_LABELS = "damaged,undamaged,unknown"
 DEFAULT_COG_PATH = ""
 TILE_SIZE = 256
 
 ANNOTATION_FIELDS = [
     "id",
     "predicted_class",
+    "annotation_label",
     "qa_status",
     "qa_correct_class",
     "qa_notes",
@@ -35,7 +37,7 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Map Feature QAQC</title>
+  <title>Map Feature Annotator</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/h3-js@4.2.1/dist/h3-js.umd.js"></script>
@@ -47,13 +49,9 @@ HTML = """<!doctype html>
       --text: #17212b;
       --muted: #64748b;
       --unreviewed: #64748b;
-      --correct: #15803d;
-      --incorrect: #7c3aed;
-      --unsure: #ca8a04;
+      --annotated: #15803d;
       --cell-empty: #e5e7eb;
-      --cell-low: #fee08b;
-      --cell-mid: #d9ef8b;
-      --cell-high: #66bd63;
+      --cell-partial: #fee08b;
       --cell-done: #1a9850;
       --shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
     }
@@ -276,6 +274,18 @@ HTML = """<!doctype html>
       gap: 7px;
     }
 
+    .legend-heading {
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 700;
+      margin-top: 2px;
+      text-transform: uppercase;
+    }
+
+    .legend-heading:first-child {
+      margin-top: 0;
+    }
+
     .dot {
       border: 1px solid var(--border);
       border-radius: 999px;
@@ -285,13 +295,9 @@ HTML = """<!doctype html>
     }
 
     .dot.unreviewed { background: var(--unreviewed); }
-    .dot.correct { background: var(--correct); }
-    .dot.incorrect { background: var(--incorrect); }
-    .dot.unsure { background: var(--unsure); }
+    .dot.annotated { background: var(--annotated); }
     .dot.cell-empty { background: var(--cell-empty); }
-    .dot.cell-low { background: var(--cell-low); }
-    .dot.cell-mid { background: var(--cell-mid); }
-    .dot.cell-high { background: var(--cell-high); }
+    .dot.cell-partial { background: var(--cell-partial); }
     .dot.cell-done { background: var(--cell-done); }
 
     @media (max-width: 860px) {
@@ -315,8 +321,8 @@ HTML = """<!doctype html>
 
   <aside class="panel">
     <section>
-      <h1>Feature QAQC</h1>
-      <p class="muted">Select an H3 cell, work through its features, then save QAQC annotations.</p>
+      <h1>Feature Annotator</h1>
+      <p class="muted">Select an H3 cell, work through its features, then save annotations.</p>
     </section>
 
     <details>
@@ -328,11 +334,24 @@ HTML = """<!doctype html>
         </label>
         <label>
           Label field
-          <input id="label-field">
+          <input id="label-field" placeholder="optional source label field">
+        </label>
+        <label>
+          Annotation labels
+          <input id="annotation-labels" placeholder="comma-separated labels">
         </label>
         <label>
           COG imagery
           <input id="cog-path" placeholder="optional local .tif/.tiff">
+        </label>
+        <label>
+          Class probability field
+          <input id="confidence-field" placeholder="optional">
+        </label>
+        <label>
+          Max confidence
+          <input id="confidence-filter" type="range" min="0" max="4" step="1">
+          <span class="muted" id="confidence-filter-label">All</span>
         </label>
         <button id="apply-settings" type="button">Load</button>
         <div class="settings-status" id="settings-status"></div>
@@ -341,14 +360,14 @@ HTML = """<!doctype html>
 
     <section class="stats">
       <div class="stat"><span class="muted">Total</span><strong id="total-count">0</strong></div>
-      <div class="stat"><span class="muted">Reviewed</span><strong id="reviewed-count">0</strong></div>
+      <div class="stat"><span class="muted">Annotated</span><strong id="reviewed-count">0</strong></div>
       <div class="stat"><span class="muted">Open</span><strong id="open-count">0</strong></div>
     </section>
 
     <section class="form">
       <label>
-        Reviewer
-        <input id="reviewer" autocomplete="name" placeholder="reviewer name">
+        Annotator
+        <input id="reviewer" autocomplete="name" placeholder="annotator name">
       </label>
 
       <div class="selected">
@@ -366,10 +385,11 @@ HTML = """<!doctype html>
       <div class="selected">
         <h2>Selected Feature</h2>
         <div class="muted">ID: <code id="selected-id">none</code></div>
+        <button id="toggle-feature-outline" type="button" disabled>Show Outline</button>
       </div>
 
       <div class="selected">
-        <h2>Correct Label</h2>
+        <h2>Annotation Label</h2>
         <div class="label-buttons" id="correct-label-buttons"></div>
       </div>
 
@@ -383,20 +403,19 @@ HTML = """<!doctype html>
   </aside>
 
   <div class="legend">
-    <div><span class="dot cell-empty"></span>Cell 0% reviewed</div>
-    <div><span class="dot cell-low"></span>Cell 1-24%</div>
-    <div><span class="dot cell-mid"></span>Cell 25-49%</div>
-    <div><span class="dot cell-high"></span>Cell 50-99%</div>
-    <div><span class="dot cell-done"></span>Cell 100%</div>
-    <div><span class="dot unreviewed"></span>Unreviewed</div>
-    <div><span class="dot correct"></span>Reviewed correct</div>
-    <div><span class="dot incorrect"></span>Reviewed not correct</div>
-    <div><span class="dot unsure"></span>Reviewed unsure</div>
+    <div class="legend-heading">H3 Grid Cells</div>
+    <div><span class="dot cell-empty"></span>Not started</div>
+    <div><span class="dot cell-partial"></span>Partially annotated</div>
+    <div><span class="dot cell-done"></span>Fully annotated</div>
+    <div class="legend-heading">Features</div>
+    <div><span class="dot unreviewed"></span>Unannotated</div>
+    <div><span class="dot annotated"></span>Annotated</div>
   </div>
 
   <script>
     const defaultBuildingsPath = __DEFAULT_BUILDINGS_PATH__;
     const defaultLabelField = __DEFAULT_LABEL_FIELD__;
+    const defaultAnnotationLabels = __DEFAULT_ANNOTATION_LABELS__;
     const defaultCogPath = __DEFAULT_COG_PATH__;
     const map = L.map("map", { preferCanvas: true, maxZoom: 23 });
     const h3ZoomLayers = [
@@ -411,13 +430,18 @@ HTML = """<!doctype html>
     const saveButton = document.getElementById("save");
     const buildingsPathInput = document.getElementById("buildings-path");
     const labelFieldInput = document.getElementById("label-field");
+    const annotationLabelsInput = document.getElementById("annotation-labels");
     const cogPathInput = document.getElementById("cog-path");
+    const confidenceFieldInput = document.getElementById("confidence-field");
+    const confidenceFilterInput = document.getElementById("confidence-filter");
+    const confidenceFilterLabel = document.getElementById("confidence-filter-label");
     const applySettings = document.getElementById("apply-settings");
     const settingsStatus = document.getElementById("settings-status");
     const selectedCell = document.getElementById("selected-cell");
     const selectedCellResolution = document.getElementById("selected-cell-resolution");
     const selectedCellProgress = document.getElementById("selected-cell-progress");
     const selectedId = document.getElementById("selected-id");
+    const toggleFeatureOutline = document.getElementById("toggle-feature-outline");
     const correctLabelButtons = document.getElementById("correct-label-buttons");
     const qaNotes = document.getElementById("qa-notes");
     const totalCount = document.getElementById("total-count");
@@ -438,16 +462,38 @@ HTML = """<!doctype html>
     let cogLayer = null;
     let selectedBuildingMarker = null;
     let selectedFeatureLayer = null;
+    let selectedOutlineVisible = false;
     let featureLayersById = {};
     let annotations = {};
     let buildingsPath = localStorage.getItem("qaqcBuildingsPath") || defaultBuildingsPath;
     let labelField = localStorage.getItem("qaqcLabelField") || defaultLabelField;
+    let annotationLabels = localStorage.getItem("qaqcAnnotationLabels") || defaultAnnotationLabels;
     let cogPath = localStorage.getItem("qaqcCogPath") || defaultCogPath;
+    let confidenceField = localStorage.getItem("qaqcConfidenceField") || "";
+    let confidenceFilter = Number(localStorage.getItem("qaqcConfidenceFilter") || 0);
     let selectedCorrectLabel = "";
+    const confidenceFilters = [
+      { label: "All", value: "all", maxRank: Infinity },
+      { label: "Very low", value: "very_low", maxRank: 0 },
+      { label: "Low or below", value: "low", maxRank: 1 },
+      { label: "Medium or below", value: "medium", maxRank: 2 },
+      { label: "High or below", value: "high", maxRank: 3 },
+    ];
 
     buildingsPathInput.value = buildingsPath;
     labelFieldInput.value = labelField;
+    annotationLabelsInput.value = annotationLabels;
     cogPathInput.value = cogPath;
+    confidenceFieldInput.value = confidenceField;
+    confidenceFilterInput.value = confidenceFilter;
+
+    function updateConfidenceFilterLabel() {
+      const filter = confidenceFilters[Number(confidenceFilterInput.value)] || confidenceFilters[0];
+      confidenceFilterLabel.textContent = filter.label;
+    }
+
+    updateConfidenceFilterLabel();
+    confidenceFilterInput.addEventListener("input", updateConfidenceFilterLabel);
 
     reviewerInput.value = localStorage.getItem("qaqcReviewer") || "";
     reviewerInput.addEventListener("input", () => {
@@ -469,20 +515,33 @@ HTML = """<!doctype html>
     }
 
     function labelFor(feature) {
+      if (!labelField) {
+        return "none";
+      }
       const value = feature.properties[labelField];
       return value == null || value === "" ? "none" : String(value);
     }
 
+    function configuredAnnotationLabels() {
+      return annotationLabels
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
+
     function labelValues() {
-      if (!buildingsData) {
-        return [];
+      if (buildingsData && labelField) {
+        const values = Array.from(new Set(
+          buildingsData.features
+            .map((feature) => feature.properties[labelField])
+            .filter((value) => value != null && value !== "")
+            .map((value) => String(value))
+        )).sort((left, right) => left.localeCompare(right));
+        if (values.length) {
+          return values;
+        }
       }
-      return Array.from(new Set(
-        buildingsData.features
-          .map((feature) => feature.properties[labelField])
-          .filter((value) => value != null && value !== "")
-          .map((value) => String(value))
-      )).sort((left, right) => left.localeCompare(right));
+      return Array.from(new Set(configuredAnnotationLabels()));
     }
 
     function setCorrectLabel(value) {
@@ -514,18 +573,72 @@ HTML = """<!doctype html>
       setCorrectLabel(values.includes(selectedValue) ? selectedValue : "");
     }
 
-    function inferredQaStatus(feature, correctLabel) {
-      if (!correctLabel) {
-        return "";
+    function annotationLabelFor(row) {
+      return row ? (row.annotation_label || row.qa_correct_class || "") : "";
+    }
+
+    function annotationIsComplete(row) {
+      return Boolean(annotationLabelFor(row) || (row && row.qa_status));
+    }
+
+    function classConfidence(feature) {
+      if (!confidenceField) {
+        return null;
       }
-      if (correctLabel === "unknown") {
-        return "unsure";
+
+      const value = feature.properties[confidenceField];
+      if (value == null || value === "") {
+        return null;
       }
-      return correctLabel === labelFor(feature) ? "correct" : "not_correct";
+
+      let probability = Number(value);
+      if (!Number.isFinite(probability)) {
+        return null;
+      }
+      if (probability > 1) {
+        probability = probability / 100;
+      }
+
+      const label = labelFor(feature).toLowerCase();
+      if (confidenceField.toLowerCase().includes("damaged") && label === "undamaged") {
+        probability = 1 - probability;
+      }
+
+      return Math.max(0, Math.min(1, probability));
+    }
+
+    function confidenceCategory(feature) {
+      const confidence = classConfidence(feature);
+      if (confidence == null) {
+        return null;
+      }
+      if (confidence < 0.6) {
+        return { value: "very_low", rank: 0 };
+      }
+      if (confidence < 0.75) {
+        return { value: "low", rank: 1 };
+      }
+      if (confidence < 0.9) {
+        return { value: "medium", rank: 2 };
+      }
+      return { value: "high", rank: 3 };
+    }
+
+    function featurePassesConfidenceFilter(feature) {
+      const filter = confidenceFilters[confidenceFilter] || confidenceFilters[0];
+      if (filter.value === "all" || !confidenceField) {
+        return true;
+      }
+      const category = confidenceCategory(feature);
+      return category ? category.rank <= filter.maxRank : false;
+    }
+
+    function visibleFeatures() {
+      return buildingsData ? buildingsData.features.filter(featurePassesConfidenceFilter) : [];
     }
 
     function isReviewed(buildingId) {
-      return Boolean(annotations[buildingId] && annotations[buildingId].qa_status);
+      return annotationIsComplete(annotations[buildingId]);
     }
 
     function setSettingsStatus(message) {
@@ -601,7 +714,7 @@ HTML = """<!doctype html>
 
     function h3CellStats(cell, resolution) {
       const column = h3ColumnForResolution(resolution);
-      const ids = buildingsData.features
+      const ids = visibleFeatures()
         .filter((feature) => feature.properties[column] === cell)
         .map((feature) => feature.properties.id)
         .filter(Boolean);
@@ -618,12 +731,6 @@ HTML = """<!doctype html>
       if (completion >= 1) {
         return "#1a9850";
       }
-      if (completion >= 0.5) {
-        return "#66bd63";
-      }
-      if (completion >= 0.25) {
-        return "#d9ef8b";
-      }
       if (completion > 0) {
         return "#fee08b";
       }
@@ -633,7 +740,7 @@ HTML = """<!doctype html>
     function h3GridGeoJson(resolution) {
       const column = h3ColumnForResolution(resolution);
       const cells = new Set(
-        buildingsData.features
+        visibleFeatures()
           .map((feature) => feature.properties[column])
           .filter(Boolean)
       );
@@ -707,7 +814,7 @@ HTML = """<!doctype html>
           }
           layer.bindTooltip(
             `H3 r${feature.properties.resolution}<br>` +
-              `${feature.properties.reviewed}/${feature.properties.total} reviewed ` +
+              `${feature.properties.reviewed}/${feature.properties.total} annotated ` +
               `(${feature.properties.completion_pct})`,
             { sticky: false }
           );
@@ -729,14 +836,8 @@ HTML = """<!doctype html>
     function styleFeature(feature) {
       const annotation = annotationFor(feature);
       let style = null;
-      if (annotation.qa_status === "correct") {
+      if (annotationIsComplete(annotation)) {
         style = { color: "#14532d", fillColor: "#15803d", fillOpacity: 0.42, weight: 1.4 };
-      }
-      else if (annotation.qa_status === "not_correct") {
-        style = { color: "#581c87", fillColor: "#7c3aed", fillOpacity: 0.42, weight: 1.4 };
-      }
-      else if (annotation.qa_status === "unsure") {
-        style = { color: "#854d0e", fillColor: "#ca8a04", fillOpacity: 0.42, weight: 1.4 };
       }
       else {
         style = {
@@ -748,13 +849,39 @@ HTML = """<!doctype html>
       }
 
       if (selectedFeature && feature.properties.id === selectedFeature.properties.id) {
-        style.opacity = 0;
+        style.color = "#39ff14";
         style.fillOpacity = 0;
-        style.weight = 0;
+        style.opacity = selectedOutlineVisible ? 1 : 0;
+        style.weight = selectedOutlineVisible ? 2.4 : 0;
       }
 
       return style;
     }
+
+    function updateSelectedOutlineButton() {
+      toggleFeatureOutline.disabled = !selectedFeature;
+      toggleFeatureOutline.textContent = selectedOutlineVisible ? "Hide Outline" : "Show Outline";
+    }
+
+    function restyleSelectedFeature() {
+      if (buildingLayer) {
+        buildingLayer.setStyle(styleFeature);
+      }
+      if (selectedBuildingMarker) {
+        selectedBuildingMarker.bringToFront();
+      }
+    }
+
+    function toggleSelectedOutline() {
+      if (!selectedFeature) {
+        return;
+      }
+      selectedOutlineVisible = !selectedOutlineVisible;
+      updateSelectedOutlineButton();
+      restyleSelectedFeature();
+    }
+
+    toggleFeatureOutline.addEventListener("click", toggleSelectedOutline);
 
     function geometryCoordinates(geometry) {
       if (!geometry) {
@@ -797,7 +924,7 @@ HTML = """<!doctype html>
 
     function updateCounts() {
       const total = buildingLayer ? buildingLayer.getLayers().length : 0;
-      const reviewed = Object.values(annotations).filter((row) => row.qa_status).length;
+      const reviewed = Object.values(annotations).filter(annotationIsComplete).length;
       totalCount.textContent = total;
       reviewedCount.textContent = reviewed;
       openCount.textContent = Math.max(total - reviewed, 0);
@@ -810,17 +937,21 @@ HTML = """<!doctype html>
       setCorrectLabel("");
       qaNotes.value = "";
       saveButton.disabled = true;
+      selectedOutlineVisible = false;
+      updateSelectedOutlineButton();
       updateSelectedBuildingMarker();
     }
 
     function selectFeature(feature, layer) {
       selectedFeature = feature;
       selectedFeatureLayer = layer || featureLayersById[feature.properties.id] || null;
+      selectedOutlineVisible = false;
       const props = feature.properties;
       const annotation = annotationFor(feature);
 
       selectedId.textContent = props.id || "none";
-      updateCorrectLabelOptions(annotation.qa_correct_class || "");
+      updateSelectedOutlineButton();
+      updateCorrectLabelOptions(annotationLabelFor(annotation));
       qaNotes.value = annotation.qa_notes || "";
       saveButton.disabled = !selectedCorrectLabel;
       if (buildingLayer) {
@@ -910,7 +1041,7 @@ HTML = """<!doctype html>
       selectedCell.textContent = selectedCellId;
       selectedCellResolution.textContent = `r${selectedCellRes}`;
       selectedCellProgress.textContent =
-        `${reviewed}/${selectedCellBuildingIds.length} reviewed, ` +
+        `${reviewed}/${selectedCellBuildingIds.length} annotated, ` +
         `feature ${selectedCellPosition + 1}/${selectedCellBuildingIds.length}`;
       previousBuilding.disabled = selectedCellBuildingIds.length < 2;
       nextOpenBuilding.disabled = reviewed >= selectedCellBuildingIds.length;
@@ -933,12 +1064,7 @@ HTML = """<!doctype html>
       annotations = await response.json();
     }
 
-    async function loadBuildings() {
-      const response = await fetch(`/api/buildings?path=${encodeURIComponent(buildingsPath)}`);
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      const data = await response.json();
+    function renderFeatureLayer(fitToFeatures) {
       if (buildingLayer) {
         map.removeLayer(buildingLayer);
       }
@@ -956,17 +1082,29 @@ HTML = """<!doctype html>
       selectedCellBuildingIds = [];
       selectedCellPosition = 0;
       featureLayersById = {};
-      buildingsData = data;
       updateCorrectLabelOptions();
+      const data = {
+        type: buildingsData.type,
+        features: visibleFeatures(),
+      };
       buildingLayer = L.geoJSON(data, {
         style: styleFeature,
         onEachFeature: onEachFeature,
       }).addTo(map);
-      if (!cogPath) {
+      if (fitToFeatures && !cogPath && buildingLayer.getLayers().length) {
         map.fitBounds(buildingLayer.getBounds(), { padding: [24, 24] });
       }
       updateH3Grid();
       updateCounts();
+    }
+
+    async function loadBuildings() {
+      const response = await fetch(`/api/buildings?path=${encodeURIComponent(buildingsPath)}`);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      buildingsData = await response.json();
+      renderFeatureLayer(true);
     }
 
     previousBuilding.addEventListener("click", () => {
@@ -983,22 +1121,40 @@ HTML = """<!doctype html>
 
     applySettings.addEventListener("click", async () => {
       const nextBuildingsPath = buildingsPathInput.value.trim() || defaultBuildingsPath;
-      const nextLabelField = labelFieldInput.value.trim() || defaultLabelField;
+      const nextLabelField = labelFieldInput.value.trim();
+      const nextAnnotationLabels = annotationLabelsInput.value.trim();
       const nextCogPath = cogPathInput.value.trim() || defaultCogPath;
-      const reloadFeatures = nextBuildingsPath !== buildingsPath || nextLabelField !== labelField;
+      const nextConfidenceField = confidenceFieldInput.value.trim();
+      const nextConfidenceFilter = Number(confidenceFilterInput.value);
+      const reloadFeatures = nextBuildingsPath !== buildingsPath;
+      const rerenderFeatures =
+        reloadFeatures ||
+        nextLabelField !== labelField ||
+        nextAnnotationLabels !== annotationLabels ||
+        nextConfidenceField !== confidenceField ||
+        nextConfidenceFilter !== confidenceFilter;
 
       applySettings.disabled = true;
       setSettingsStatus("Loading settings...");
-      buildingsPath = buildingsPathInput.value.trim() || defaultBuildingsPath;
-      labelField = labelFieldInput.value.trim() || defaultLabelField;
-      cogPath = cogPathInput.value.trim() || defaultCogPath;
+      buildingsPath = nextBuildingsPath;
+      labelField = nextLabelField;
+      annotationLabels = nextAnnotationLabels;
+      cogPath = nextCogPath;
+      confidenceField = nextConfidenceField;
+      confidenceFilter = Number.isFinite(nextConfidenceFilter) ? nextConfidenceFilter : 0;
       localStorage.setItem("qaqcBuildingsPath", buildingsPath);
       localStorage.setItem("qaqcLabelField", labelField);
+      localStorage.setItem("qaqcAnnotationLabels", annotationLabels);
       localStorage.setItem("qaqcCogPath", cogPath);
+      localStorage.setItem("qaqcConfidenceField", confidenceField);
+      localStorage.setItem("qaqcConfidenceFilter", String(confidenceFilter));
       saveButton.disabled = true;
       try {
         if (reloadFeatures) {
           await loadBuildings();
+        }
+        else if (rerenderFeatures) {
+          renderFeatureLayer(false);
         }
       }
       catch (error) {
@@ -1033,8 +1189,9 @@ HTML = """<!doctype html>
       const props = selectedFeature.properties;
       const payload = {
         id: props.id,
-        predicted_class: labelFor(selectedFeature),
-        qa_status: inferredQaStatus(selectedFeature, selectedCorrectLabel),
+        predicted_class: labelField ? labelFor(selectedFeature) : "",
+        annotation_label: selectedCorrectLabel,
+        qa_status: "annotated",
         qa_correct_class: selectedCorrectLabel,
         qa_notes: qaNotes.value,
         reviewer: reviewerInput.value,
@@ -1184,6 +1341,7 @@ def make_handler(store: QaqcStore):
                 HTML
                 .replace("__DEFAULT_BUILDINGS_PATH__", json.dumps(str(store.buildings_path)))
                 .replace("__DEFAULT_LABEL_FIELD__", json.dumps(DEFAULT_LABEL_FIELD))
+                .replace("__DEFAULT_ANNOTATION_LABELS__", json.dumps(DEFAULT_ANNOTATION_LABELS))
                 .replace("__DEFAULT_COG_PATH__", json.dumps(DEFAULT_COG_PATH))
             )
 
@@ -1304,7 +1462,7 @@ def make_handler(store: QaqcStore):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the local map-feature QAQC app.")
+    parser = argparse.ArgumentParser(description="Run the local map-feature annotation app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8501)
     parser.add_argument(
@@ -1326,7 +1484,7 @@ def main() -> None:
     args = build_parser().parse_args()
     store = QaqcStore(args.buildings, args.annotations)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(store))
-    print(f"QAQC app: http://{args.host}:{args.port}")
+    print(f"Annotation app: http://{args.host}:{args.port}")
     print(f"Features: {store.buildings_path}")
     print(f"Annotations: {store.annotations_path}")
     server.serve_forever()
