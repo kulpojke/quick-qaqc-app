@@ -1,0 +1,13 @@
+name: damagemap-qaqc
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - gdal
+  - geopandas
+  - h3-py
+  - numpy
+  - pandas
+  - pillow
+  - rasterio
+  - rio-tiler
