@@ -342,7 +342,7 @@ HTML = """<!doctype html>
         </label>
         <label>
           COG imagery
-          <input id="cog-path" placeholder="optional local .tif/.tiff">
+          <input id="cog-path" placeholder="optional local path or URL">
         </label>
         <label>
           Class probability field
@@ -667,7 +667,7 @@ HTML = """<!doctype html>
       cogLayer = L.tileLayer(
         `/api/cog/tile/{z}/{x}/{y}.png?path=${encodedPath}&v=${cacheKey}`,
         {
-          attribution: "Local COG",
+          attribution: "COG imagery",
           bounds: bounds,
           maxNativeZoom: 23,
           maxZoom: 23,
@@ -1255,12 +1255,33 @@ def empty_png_tile() -> bytes:
     return output.getvalue()
 
 
-def render_cog_tile(cog_path: Path, z: int, x: int, y: int) -> bytes:
+CogSource = Path | str
+
+
+def is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def parse_cog_source(value: str) -> CogSource | None:
+    value = value.strip()
+    if not value:
+        return None
+    if is_http_url(value):
+        return value
+    return Path(value)
+
+
+def cog_source_exists(source: CogSource) -> bool:
+    return isinstance(source, str) or source.exists()
+
+
+def render_cog_tile(cog_source: CogSource, z: int, x: int, y: int) -> bytes:
     from rio_tiler.errors import TileOutsideBounds
     from rio_tiler.io import Reader
 
     try:
-        with Reader(str(cog_path)) as cog:
+        with Reader(str(cog_source)) as cog:
             indexes = (1, 2, 3) if cog.dataset.count >= 3 else (1,)
             tile = cog.tile(x, y, z, indexes=indexes)
             return tile.render(img_format="PNG")
@@ -1268,13 +1289,13 @@ def render_cog_tile(cog_path: Path, z: int, x: int, y: int) -> bytes:
         return empty_png_tile()
 
 
-def cog_info(cog_path: Path) -> dict[str, object]:
+def cog_info(cog_source: CogSource) -> dict[str, object]:
     import rasterio
     from rasterio.warp import transform_bounds
 
-    with rasterio.open(cog_path) as dataset:
+    with rasterio.open(str(cog_source)) as dataset:
         if dataset.crs is None:
-            raise ValueError(f"COG has no CRS: {cog_path}")
+            raise ValueError(f"COG has no CRS: {cog_source}")
 
         left, bottom, right, top = transform_bounds(
             dataset.crs,
@@ -1283,7 +1304,7 @@ def cog_info(cog_path: Path) -> dict[str, object]:
             densify_pts=21,
         )
         return {
-            "path": str(cog_path),
+            "path": str(cog_source),
             "crs": dataset.crs.to_string(),
             "width": dataset.width,
             "height": dataset.height,
@@ -1350,10 +1371,10 @@ def make_handler(store: QaqcStore):
             value = query.get("path", [""])[0].strip()
             return Path(value) if value else store.buildings_path
 
-        def requested_cog_path(self) -> Path:
+        def requested_cog_source(self) -> CogSource | None:
             query = parse_qs(urlparse(self.path).query)
             value = query.get("path", [""])[0].strip()
-            return Path(value) if value else Path()
+            return parse_cog_source(value)
 
         def tile_coordinates(self) -> tuple[int, int, int]:
             path = urlparse(self.path).path
@@ -1416,24 +1437,30 @@ def make_handler(store: QaqcStore):
                 return
 
             if path == "/api/cog/info":
-                cog_path = self.requested_cog_path()
-                if not cog_path.exists():
-                    self.send_text(f"COG file not found: {cog_path}", HTTPStatus.NOT_FOUND)
+                cog_source = self.requested_cog_source()
+                if cog_source is None:
+                    self.send_text("COG path or URL is required", HTTPStatus.BAD_REQUEST)
+                    return
+                if not cog_source_exists(cog_source):
+                    self.send_text(f"COG file not found: {cog_source}", HTTPStatus.NOT_FOUND)
                     return
                 try:
-                    self.send_json(cog_info(cog_path))
+                    self.send_json(cog_info(cog_source))
                 except Exception as error:
                     self.send_text(str(error), HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
 
             if path.startswith("/api/cog/tile/") and path.endswith(".png"):
-                cog_path = self.requested_cog_path()
-                if not cog_path.exists():
-                    self.send_text(f"COG file not found: {cog_path}", HTTPStatus.NOT_FOUND)
+                cog_source = self.requested_cog_source()
+                if cog_source is None:
+                    self.send_text("COG path or URL is required", HTTPStatus.BAD_REQUEST)
+                    return
+                if not cog_source_exists(cog_source):
+                    self.send_text(f"COG file not found: {cog_source}", HTTPStatus.NOT_FOUND)
                     return
                 try:
                     z, x, y = self.tile_coordinates()
-                    self.send_png(render_cog_tile(cog_path, z, x, y))
+                    self.send_png(render_cog_tile(cog_source, z, x, y))
                 except Exception as error:
                     self.send_text(str(error), HTTPStatus.INTERNAL_SERVER_ERROR)
                 return

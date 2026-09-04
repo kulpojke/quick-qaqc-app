@@ -51,7 +51,7 @@ Run the app:
 python app.py
 ```
 
-Open `http://127.0.0.1:8501` in a web browser, set the feature GeoJSON, annotation labels, optional COG path, and annotator name. The label field is optional; when supplied, its unique values are used as annotation button options. If class probability is available, you can select that field from the GeoJSON and filter features by model confidence.
+Open `http://127.0.0.1:8501` in a web browser, set the feature GeoJSON, annotation labels, optional local COG path or COG URL, and annotator name. The label field is optional; when supplied, its unique values are used as annotation button options. If class probability is available, you can select that field from the GeoJSON and filter features by model confidence.
 
 The imagery should appear as well as hexagonal grid cells. Grid cells only appear where features are present. The grid will change scale when you zoom. Zoom to the desired level and select a grid cell by clicking it. Use escape to exit a selected grid cell.
 
@@ -60,4 +60,3 @@ The cell will appear as a pink outline. A green circle will show the location of
 To begin annotating features, look at the image within the circle, decide what the class is, and pick it from the available buttons under "Annotation Label". When you save the annotation, it will jump to the next feature.  Repeat this process until all features in the hexgrid are complete.  When you are done, the app will exit the hexgrid and zoom back out.
 
 Hexgrid colors will change based on completion.
-
