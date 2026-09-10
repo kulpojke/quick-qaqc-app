@@ -1371,6 +1371,7 @@ def make_handler(store: QaqcStore):
                 return
 
         def app_html(self) -> str:
+            '''Returns frontend HTML string with default paths inserted'''
             return (
                 HTML
                 .replace("__DEFAULT_BUILDINGS_PATH__", json.dumps(str(store.buildings_path)))

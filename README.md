@@ -60,3 +60,8 @@ The cell will appear as a pink outline. A green circle will show the location of
 To begin annotating features, look at the image within the circle, decide what the class is, and pick it from the available buttons under "Annotation Label". When you save the annotation, it will jump to the next feature.  Repeat this process until all features in the hexgrid are complete.  When you are done, the app will exit the hexgrid and zoom back out.
 
 Hexgrid colors will change based on completion.
+
+## Application flow
+
+The detailed flow chart is in [flow_chart.md](flow_chart.md). A rendered vector
+PDF is available at [flow_chart.pdf](flow_chart.pdf) for zooming and scrolling.
