@@ -1247,6 +1247,7 @@ HTML = """<!doctype html>
 
 
 def empty_png_tile() -> bytes:
+    ''' Creates empty tile to be used as a successful blank map tile response'''
     from PIL import Image
 
     image = Image.new("RGBA", (TILE_SIZE, TILE_SIZE), (0, 0, 0, 0))
@@ -1264,6 +1265,7 @@ def is_http_url(value: str) -> bool:
 
 
 def parse_cog_source(value: str) -> CogSource | None:
+    '''Parses COG source string into http(s) url, Path, or None'''
     value = value.strip()
     if not value:
         return None
@@ -1273,23 +1275,29 @@ def parse_cog_source(value: str) -> CogSource | None:
 
 
 def cog_source_exists(source: CogSource) -> bool:
+    '''Returns True if source is a string or Path to an existing file'''
     return isinstance(source, str) or source.exists()
 
 
 def render_cog_tile(cog_source: CogSource, z: int, x: int, y: int) -> bytes:
+    '''Returns rendered tile'''
     from rio_tiler.errors import TileOutsideBounds
     from rio_tiler.io import Reader
 
     try:
+        # fetch the tile
         with Reader(str(cog_source)) as cog:
+            # TODO: allow for different band orders?
             indexes = (1, 2, 3) if cog.dataset.count >= 3 else (1,)
             tile = cog.tile(x, y, z, indexes=indexes)
             return tile.render(img_format="PNG")
     except TileOutsideBounds:
+        # return and empty tile
         return empty_png_tile()
 
 
 def cog_info(cog_source: CogSource) -> dict[str, object]:
+    '''Returns dict containing info about COG'''
     import rasterio
     from rasterio.warp import transform_bounds
 
@@ -1319,6 +1327,11 @@ class QaqcStore:
         self.annotations_path = annotations_path
 
     def read_buildings(self, buildings_path: Path | None = None) -> dict:
+        '''
+        Load json from buildings_path, fall back to path stored in object.
+        TODO: currently falls back to harcoded dafault, in future use 
+        config.yml to set  default
+        '''
         path = buildings_path or self.buildings_path
         with path.open() as file:
             return json.load(file)
