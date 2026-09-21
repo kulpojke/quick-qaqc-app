@@ -11,3 +11,4 @@ dependencies:
   - pillow
   - rasterio
   - rio-tiler
+  - pyyaml

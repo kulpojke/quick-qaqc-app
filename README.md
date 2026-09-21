@@ -51,6 +51,25 @@ Run the app:
 python app.py
 ```
 
+For an assigned project, copy `config.example.yaml`, edit it, and pass it to
+the app:
+
+```bash
+python app.py --yaml project.yaml
+```
+
+Relative paths in the YAML are resolved from the YAML file's directory, and
+`{user}` in output paths is replaced with `workflow.user`. In YAML mode the
+in-app Settings panel is hidden, the technician name is locked, and only
+features inside the H3 cells listed under `workflow.todo` are loaded into the
+work queue. An empty TODO list makes every feature available.
+
+`annotation` and `qaqc` can be enabled together and use independent input and
+output CSVs. Existing input files are treated as read-only; the current user's
+work is written only to the configured `{user}` output. The `editing` mode and
+output path are accepted by the configuration format, but geometry editing is
+not implemented yet, so an editing-only project cannot be started.
+
 Open `http://127.0.0.1:8501` in a web browser, set the feature GeoJSON, annotation labels, optional local COG path or COG URL, and annotator name. The label field is optional; when supplied, its unique values are used as annotation button options. If class probability is available, you can select that field from the GeoJSON and filter features by model confidence.
 
 The imagery should appear as well as hexagonal grid cells. Grid cells only appear where features are present. The grid will change scale when you zoom. Zoom to the desired level and select a grid cell by clicking it. Use escape to exit a selected grid cell.

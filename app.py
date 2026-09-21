@@ -7,11 +7,16 @@ import argparse
 import csv
 import io
 import json
+import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from src.project_config import ConfigError, ReviewConfig, load_review_config
 
 
 DEFAULT_BUILDINGS_PATH = Path("../damage-map-web-map/data/buildings_h3.geojson")
@@ -19,6 +24,8 @@ DEFAULT_ANNOTATIONS_PATH = Path("data/qaqc/annotations_local.csv")
 DEFAULT_LABEL_FIELD = ""
 DEFAULT_ANNOTATION_LABELS = "damaged,undamaged,unknown"
 DEFAULT_COG_PATH = ""
+DEFAULT_FEATURE_ID_FIELD = 'id'
+DEFAULT_H3_PREFIX = 'h3_r'
 TILE_SIZE = 256
 
 ANNOTATION_FIELDS = [
@@ -321,11 +328,12 @@ HTML = """<!doctype html>
 
   <aside class="panel">
     <section>
-      <h1>Feature Annotator</h1>
+      <h1 id="project-name">Feature Annotator</h1>
       <p class="muted">Select an H3 cell, work through its features, then save annotations.</p>
+      <p class="muted" id="workflow-summary"></p>
     </section>
 
-    <details>
+    <details id="settings-panel">
       <summary>Settings</summary>
       <div class="settings-body">
         <label>
@@ -370,6 +378,11 @@ HTML = """<!doctype html>
         <input id="reviewer" autocomplete="name" placeholder="annotator name">
       </label>
 
+      <div class="selected" id="workflow-mode-section">
+        <h2>Task</h2>
+        <div class="label-buttons" id="workflow-mode-buttons"></div>
+      </div>
+
       <div class="selected">
         <h2>Selected H3 Cell</h2>
         <div class="muted">Cell: <code id="selected-cell">none</code></div>
@@ -389,7 +402,7 @@ HTML = """<!doctype html>
       </div>
 
       <div class="selected">
-        <h2>Annotation Label</h2>
+        <h2 id="label-heading">Annotation Label</h2>
         <div class="label-buttons" id="correct-label-buttons"></div>
       </div>
 
@@ -417,6 +430,14 @@ HTML = """<!doctype html>
     const defaultLabelField = __DEFAULT_LABEL_FIELD__;
     const defaultAnnotationLabels = __DEFAULT_ANNOTATION_LABELS__;
     const defaultCogPath = __DEFAULT_COG_PATH__;
+    const defaultConfidenceField = __DEFAULT_CONFIDENCE_FIELD__;
+    const yamlConfigured = __YAML_CONFIGURED__;
+    const configuredProjectName = __PROJECT_NAME__;
+    const configuredFeatureIdField = __FEATURE_ID_FIELD__;
+    const configuredH3Prefix = __H3_PREFIX__;
+    const configuredUser = __WORKFLOW_USER__;
+    const workflowModes = __WORKFLOW_MODES__;
+    const todoH3Indexes = __TODO_H3_INDEXES__;
     const map = L.map("map", { preferCanvas: true, maxZoom: 23 });
     const h3ZoomLayers = [
       { minZoom: 0, maxZoom: 8, resolution: 5 },
@@ -450,6 +471,12 @@ HTML = """<!doctype html>
     const previousBuilding = document.getElementById("previous-building");
     const nextOpenBuilding = document.getElementById("next-open-building");
     const nextBuilding = document.getElementById("next-building");
+    const settingsPanel = document.getElementById('settings-panel');
+    const projectName = document.getElementById('project-name');
+    const workflowSummary = document.getElementById('workflow-summary');
+    const workflowModeSection = document.getElementById('workflow-mode-section');
+    const workflowModeButtons = document.getElementById('workflow-mode-buttons');
+    const labelHeading = document.getElementById('label-heading');
 
     let selectedFeature = null;
     let selectedCellId = null;
@@ -465,13 +492,33 @@ HTML = """<!doctype html>
     let selectedOutlineVisible = false;
     let featureLayersById = {};
     let annotations = {};
-    let buildingsPath = localStorage.getItem("qaqcBuildingsPath") || defaultBuildingsPath;
-    let labelField = localStorage.getItem("qaqcLabelField") || defaultLabelField;
-    let annotationLabels = localStorage.getItem("qaqcAnnotationLabels") || defaultAnnotationLabels;
-    let cogPath = localStorage.getItem("qaqcCogPath") || defaultCogPath;
-    let confidenceField = localStorage.getItem("qaqcConfidenceField") || "";
-    let confidenceFilter = Number(localStorage.getItem("qaqcConfidenceFilter") || 0);
-    let selectedCorrectLabel = "";
+    let buildingsPath = yamlConfigured
+      ? defaultBuildingsPath
+      : localStorage.getItem('qaqcBuildingsPath') || defaultBuildingsPath;
+    let labelField = yamlConfigured
+      ? defaultLabelField
+      : localStorage.getItem('qaqcLabelField') || defaultLabelField;
+    let annotationLabels = yamlConfigured
+      ? defaultAnnotationLabels
+      : localStorage.getItem('qaqcAnnotationLabels') || defaultAnnotationLabels;
+    let cogPath = yamlConfigured
+      ? defaultCogPath
+      : localStorage.getItem('qaqcCogPath') || defaultCogPath;
+    let confidenceField = yamlConfigured
+      ? defaultConfidenceField
+      : localStorage.getItem('qaqcConfidenceField') || '';
+    let confidenceFilter = yamlConfigured
+      ? 0
+      : Number(localStorage.getItem('qaqcConfidenceFilter') || 0);
+    let selectedCorrectLabel = '';
+    const reviewModes = workflowModes.filter((mode) => mode === 'annotation' || mode === 'qaqc');
+    let activeMode = reviewModes[0] || 'annotation';
+    const featureIdField = configuredFeatureIdField || 'id';
+    const h3Prefix = configuredH3Prefix || 'h3_r';
+    const todoAssignments = todoH3Indexes.map((index) => ({
+      index: String(index),
+      resolution: h3.getResolution ? h3.getResolution(index) : h3.h3GetResolution(index),
+    }));
     const confidenceFilters = [
       { label: "All", value: "all", maxRank: Infinity },
       { label: "Very low", value: "very_low", maxRank: 0 },
@@ -495,11 +542,45 @@ HTML = """<!doctype html>
     updateConfidenceFilterLabel();
     confidenceFilterInput.addEventListener("input", updateConfidenceFilterLabel);
 
-    reviewerInput.value = localStorage.getItem("qaqcReviewer") || "";
-    reviewerInput.addEventListener("input", () => {
-      localStorage.setItem("qaqcReviewer", reviewerInput.value);
-      updateH3Grid();
-    });
+    if (yamlConfigured) {
+      settingsPanel.hidden = true;
+      projectName.textContent = configuredProjectName || 'Feature Annotator';
+      workflowSummary.textContent = `${workflowModes.join(' + ')} | ${todoAssignments.length || 'all'} H3 assignment${todoAssignments.length === 1 ? '' : 's'}`;
+      reviewerInput.value = configuredUser;
+      reviewerInput.readOnly = true;
+    }
+    else {
+      reviewerInput.value = localStorage.getItem('qaqcReviewer') || '';
+      reviewerInput.addEventListener('input', () => {
+        localStorage.setItem('qaqcReviewer', reviewerInput.value);
+        updateH3Grid();
+      });
+    }
+
+    function renderWorkflowModes() {
+      workflowModeButtons.replaceChildren();
+      reviewModes.forEach((mode) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.value = mode;
+        button.textContent = mode === 'qaqc' ? 'QA/QC' : 'Annotation';
+        button.classList.toggle('active', mode === activeMode);
+        button.addEventListener('click', async () => {
+          if (activeMode === mode) {
+            return;
+          }
+          activeMode = mode;
+          renderWorkflowModes();
+          await loadAnnotations();
+          renderFeatureLayer(false);
+        });
+        workflowModeButtons.appendChild(button);
+      });
+      workflowModeSection.hidden = reviewModes.length < 2;
+      labelHeading.textContent = activeMode === 'qaqc' ? 'QA/QC Label' : 'Annotation Label';
+    }
+
+    renderWorkflowModes();
 
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
@@ -511,7 +592,14 @@ HTML = """<!doctype html>
     ).addTo(map);
 
     function annotationFor(feature) {
-      return annotations[feature.properties.id] || {};
+      return annotations[featureId(feature)] || {};
+    }
+
+    function featureId(feature) {
+      const value = feature && feature.properties
+        ? feature.properties[featureIdField]
+        : null;
+      return value == null ? '' : String(value);
     }
 
     function labelFor(feature) {
@@ -530,7 +618,7 @@ HTML = """<!doctype html>
     }
 
     function labelValues() {
-      if (buildingsData && labelField) {
+      if (!yamlConfigured && buildingsData && labelField) {
         const values = Array.from(new Set(
           buildingsData.features
             .map((feature) => feature.properties[labelField])
@@ -634,7 +722,21 @@ HTML = """<!doctype html>
     }
 
     function visibleFeatures() {
-      return buildingsData ? buildingsData.features.filter(featurePassesConfidenceFilter) : [];
+      return buildingsData
+        ? buildingsData.features.filter((feature) => (
+            featureIsAssigned(feature) && featurePassesConfidenceFilter(feature)
+          ))
+        : [];
+    }
+
+    function featureIsAssigned(feature) {
+      if (!todoAssignments.length) {
+        return true;
+      }
+      return todoAssignments.some((assignment) => {
+        const column = h3ColumnForResolution(assignment.resolution);
+        return String(feature.properties[column] || '') === assignment.index;
+      });
     }
 
     function isReviewed(buildingId) {
@@ -700,7 +802,7 @@ HTML = """<!doctype html>
     }
 
     function h3ColumnForResolution(resolution) {
-      return `h3_r${resolution}`;
+      return `${h3Prefix}${resolution}`;
     }
 
     function h3BoundaryLatLngs(cell) {
@@ -716,7 +818,7 @@ HTML = """<!doctype html>
       const column = h3ColumnForResolution(resolution);
       const ids = visibleFeatures()
         .filter((feature) => feature.properties[column] === cell)
-        .map((feature) => feature.properties.id)
+        .map(featureId)
         .filter(Boolean);
       const reviewed = ids.filter(isReviewed).length;
       return {
@@ -848,7 +950,7 @@ HTML = """<!doctype html>
         };
       }
 
-      if (selectedFeature && feature.properties.id === selectedFeature.properties.id) {
+      if (selectedFeature && featureId(feature) === featureId(selectedFeature)) {
         style.color = "#39ff14";
         style.fillOpacity = 0;
         style.opacity = selectedOutlineVisible ? 1 : 0;
@@ -923,8 +1025,11 @@ HTML = """<!doctype html>
     }
 
     function updateCounts() {
-      const total = buildingLayer ? buildingLayer.getLayers().length : 0;
-      const reviewed = Object.values(annotations).filter(annotationIsComplete).length;
+      const visibleIds = buildingLayer
+        ? buildingLayer.getLayers().map((layer) => featureId(layer.feature)).filter(Boolean)
+        : [];
+      const total = visibleIds.length;
+      const reviewed = visibleIds.filter(isReviewed).length;
       totalCount.textContent = total;
       reviewedCount.textContent = reviewed;
       openCount.textContent = Math.max(total - reviewed, 0);
@@ -944,12 +1049,12 @@ HTML = """<!doctype html>
 
     function selectFeature(feature, layer) {
       selectedFeature = feature;
-      selectedFeatureLayer = layer || featureLayersById[feature.properties.id] || null;
+      selectedFeatureLayer = layer || featureLayersById[featureId(feature)] || null;
       selectedOutlineVisible = false;
       const props = feature.properties;
       const annotation = annotationFor(feature);
 
-      selectedId.textContent = props.id || "none";
+      selectedId.textContent = featureId(feature) || 'none';
       updateSelectedOutlineButton();
       updateCorrectLabelOptions(annotationLabelFor(annotation));
       qaNotes.value = annotation.qa_notes || "";
@@ -1049,18 +1154,22 @@ HTML = """<!doctype html>
     }
 
     function onEachFeature(feature, layer) {
-      if (feature.properties.id) {
-        featureLayersById[feature.properties.id] = layer;
+      const id = featureId(feature);
+      if (id) {
+        featureLayersById[id] = layer;
       }
-      layer.on("click", () => {
+      layer.on('click', () => {
         selectFeature(feature, layer);
         layer.bringToFront();
       });
-      layer.bindTooltip(`ID: ${feature.properties.id}`, { sticky: false });
+      layer.bindTooltip(`ID: ${id}`, { sticky: false });
     }
 
     async function loadAnnotations() {
-      const response = await fetch("/api/annotations");
+      const response = await fetch(`/api/annotations?mode=${encodeURIComponent(activeMode)}`);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
       annotations = await response.json();
     }
 
@@ -1188,7 +1297,7 @@ HTML = """<!doctype html>
 
       const props = selectedFeature.properties;
       const payload = {
-        id: props.id,
+        id: featureId(selectedFeature),
         predicted_class: labelField ? labelFor(selectedFeature) : "",
         annotation_label: selectedCorrectLabel,
         qa_status: "annotated",
@@ -1197,7 +1306,7 @@ HTML = """<!doctype html>
         reviewer: reviewerInput.value,
       };
 
-      const response = await fetch("/api/annotations", {
+      const response = await fetch(`/api/annotations?mode=${encodeURIComponent(activeMode)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1322,12 +1431,23 @@ def cog_info(cog_source: CogSource) -> dict[str, object]:
 
 
 class QaqcStore:
-    def __init__(self, buildings_path: Path, annotations_path: Path):
+    '''*!*! Read project features and layer persisted review records.'''
+
+    def __init__(
+        self,
+        buildings_path: Path,
+        annotations_path: Path,
+        annotations_input_path: Path | None = None,
+    ):
+        '''*!*! Configure feature, output, and optional merged-input paths.'''
+
         self.buildings_path = buildings_path
         self.annotations_path = annotations_path
+        self.annotations_input_path = annotations_input_path
+        self._write_lock = threading.Lock()
 
     def read_buildings(self, buildings_path: Path | None = None) -> dict:
-        '''
+        '''*!*!
         Load json from buildings_path, fall back to path stored in object.
         TODO: currently falls back to harcoded dafault, in future use 
         config.yml to set  default
@@ -1336,33 +1456,119 @@ class QaqcStore:
         with path.open() as file:
             return json.load(file)
 
-    def read_annotations(self) -> dict[str, dict[str, str]]:
-        if not self.annotations_path.exists():
+    @staticmethod
+    def _read_annotation_file(path: Path | None) -> dict[str, dict[str, str]]:
+        '''*!*! Read one annotation CSV and normalize merged wide rows.'''
+
+        if path is None or not path.exists():
             return {}
 
-        with self.annotations_path.open(newline="") as file:
-            return {
-                row["id"]: row
-                for row in csv.DictReader(file)
-                if row.get("id")
-            }
+        with path.open(newline='', encoding='utf-8') as file:
+            annotations = {}
+            for row in csv.DictReader(file):
+                if not row.get('id'):
+                    continue
+                # Wide files from merge_qaqc_annotations.py have one label
+                # column per reviewer. Treat them as complete without exposing
+                # a previous reviewer's label in the blinded UI.
+                reviewer_labels = [
+                    value
+                    for key, value in row.items()
+                    if key.endswith('_annotation_label') and value
+                ]
+                if not row.get('annotation_label') and reviewer_labels:
+                    row['qa_status'] = row.get('qa_status') or 'annotated'
+                annotations[row['id']] = row
+            return annotations
+
+    def read_annotations(self) -> dict[str, dict[str, str]]:
+        '''*!*! Overlay this user's output records on merged input records.'''
+
+        annotations = self._read_annotation_file(self.annotations_input_path)
+        annotations.update(self._read_annotation_file(self.annotations_path))
+        return annotations
 
     def write_annotation(self, annotation: dict[str, str]) -> dict[str, str]:
-        annotations = self.read_annotations()
-        annotation = {field: annotation.get(field, "") for field in ANNOTATION_FIELDS}
-        annotation["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-        annotations[annotation["id"]] = annotation
+        '''*!*! Atomically add or replace one record in the user output.'''
 
-        self.annotations_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.annotations_path.open("w", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=ANNOTATION_FIELDS)
-            writer.writeheader()
-            writer.writerows(annotations.values())
+        with self._write_lock:
+            # Only rewrite this user's output. Loaded merged input remains read-only.
+            annotations = self._read_annotation_file(self.annotations_path)
+            annotation = {field: annotation.get(field, '') for field in ANNOTATION_FIELDS}
+            annotation['reviewed_at'] = datetime.now(timezone.utc).isoformat()
+            annotations[annotation['id']] = annotation
+
+            self.annotations_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    'w',
+                    dir=self.annotations_path.parent,
+                    newline='',
+                    encoding='utf-8',
+                    delete=False,
+                ) as file:
+                    temp_path = Path(file.name)
+                    writer = csv.DictWriter(file, fieldnames=ANNOTATION_FIELDS)
+                    writer.writeheader()
+                    writer.writerows(annotations.values())
+                os.replace(temp_path, self.annotations_path)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
 
         return annotation
 
 
-def make_handler(store: QaqcStore):
+def filter_buildings_for_assignments(
+    buildings: dict,
+    review_config: ReviewConfig | None,
+) -> dict:
+    '''*!*! Return only features belonging to assigned H3 cells.'''
+
+    if review_config is None or not review_config.todo_h3_indexes:
+        return buildings
+
+    import h3
+
+    assignments: dict[str, set[str]] = {}
+    for index in review_config.todo_h3_indexes:
+        column = f'{review_config.h3_prefix}{h3.get_resolution(index)}'
+        assignments.setdefault(column, set()).add(index)
+
+    filtered = dict(buildings)
+    filtered['features'] = [
+        feature
+        for feature in buildings.get('features', [])
+        if any(
+            str(feature.get('properties', {}).get(column, '')) in indexes
+            for column, indexes in assignments.items()
+        )
+    ]
+    return filtered
+
+
+def make_handler(
+    store: QaqcStore,
+    review_config: ReviewConfig | None = None,
+    mode_stores: dict[str, QaqcStore] | None = None,
+):
+    '''*!*! Build an HTTP handler bound to project config and mode stores.'''
+
+    stores = mode_stores or {'annotation': store}
+    configured_buildings = None
+    assigned_feature_ids = None
+    if review_config is not None:
+        configured_buildings = filter_buildings_for_assignments(
+            store.read_buildings(),
+            review_config,
+        )
+        assigned_feature_ids = {
+            str(feature.get('properties', {}).get(review_config.feature_id_field))
+            for feature in configured_buildings.get('features', [])
+            if feature.get('properties', {}).get(review_config.feature_id_field) is not None
+        }
+
     class Handler(BaseHTTPRequestHandler):
         def handle_one_request(self) -> None:
             try:
@@ -1371,24 +1577,66 @@ def make_handler(store: QaqcStore):
                 return
 
         def app_html(self) -> str:
-            '''Returns frontend HTML string with default paths inserted'''
+            '''*!*! Return frontend HTML with project defaults inserted.'''
+
+            labels = DEFAULT_ANNOTATION_LABELS
+            cog_path = DEFAULT_COG_PATH
+            label_field = DEFAULT_LABEL_FIELD
+            project_name = 'Feature Annotator'
+            feature_id_field = DEFAULT_FEATURE_ID_FIELD
+            h3_prefix = DEFAULT_H3_PREFIX
+            workflow_user = ''
+            workflow_modes = ['annotation']
+            todo_h3_indexes = []
+            if review_config is not None:
+                labels = ','.join(review_config.annotation_labels)
+                cog_path = review_config.imagery_cog
+                label_field = review_config.predicted_class_field
+                project_name = review_config.project_name
+                feature_id_field = review_config.feature_id_field
+                h3_prefix = review_config.h3_prefix
+                workflow_user = review_config.user
+                workflow_modes = list(review_config.modes)
+                todo_h3_indexes = list(review_config.todo_h3_indexes)
             return (
                 HTML
-                .replace("__DEFAULT_BUILDINGS_PATH__", json.dumps(str(store.buildings_path)))
-                .replace("__DEFAULT_LABEL_FIELD__", json.dumps(DEFAULT_LABEL_FIELD))
-                .replace("__DEFAULT_ANNOTATION_LABELS__", json.dumps(DEFAULT_ANNOTATION_LABELS))
-                .replace("__DEFAULT_COG_PATH__", json.dumps(DEFAULT_COG_PATH))
+                .replace('__DEFAULT_BUILDINGS_PATH__', json.dumps(str(store.buildings_path)))
+                .replace('__DEFAULT_LABEL_FIELD__', json.dumps(label_field))
+                .replace('__DEFAULT_ANNOTATION_LABELS__', json.dumps(labels))
+                .replace('__DEFAULT_COG_PATH__', json.dumps(cog_path))
+                .replace(
+                    '__DEFAULT_CONFIDENCE_FIELD__',
+                    json.dumps(review_config.confidence_field if review_config else ''),
+                )
+                .replace('__YAML_CONFIGURED__', json.dumps(review_config is not None))
+                .replace('__PROJECT_NAME__', json.dumps(project_name))
+                .replace('__FEATURE_ID_FIELD__', json.dumps(feature_id_field))
+                .replace('__H3_PREFIX__', json.dumps(h3_prefix))
+                .replace('__WORKFLOW_USER__', json.dumps(workflow_user))
+                .replace('__WORKFLOW_MODES__', json.dumps(workflow_modes))
+                .replace('__TODO_H3_INDEXES__', json.dumps(todo_h3_indexes))
             )
 
         def requested_buildings_path(self) -> Path:
+            if review_config is not None:
+                return store.buildings_path
             query = parse_qs(urlparse(self.path).query)
             value = query.get("path", [""])[0].strip()
             return Path(value) if value else store.buildings_path
 
         def requested_cog_source(self) -> CogSource | None:
+            if review_config is not None:
+                return parse_cog_source(review_config.imagery_cog)
             query = parse_qs(urlparse(self.path).query)
             value = query.get("path", [""])[0].strip()
             return parse_cog_source(value)
+
+        def requested_annotation_store(self) -> QaqcStore | None:
+            '''*!*! Return the configured persistence store for a requested mode.'''
+
+            query = parse_qs(urlparse(self.path).query)
+            mode = query.get('mode', ['annotation'])[0].strip().lower()
+            return stores.get(mode)
 
         def tile_coordinates(self) -> tuple[int, int, int]:
             path = urlparse(self.path).path
@@ -1436,6 +1684,9 @@ def make_handler(store: QaqcStore):
                 return
 
             if path == "/api/buildings":
+                if configured_buildings is not None:
+                    self.send_json(configured_buildings)
+                    return
                 buildings_path = self.requested_buildings_path()
                 if not buildings_path.exists():
                     self.send_text(
@@ -1443,11 +1694,16 @@ def make_handler(store: QaqcStore):
                         HTTPStatus.NOT_FOUND,
                     )
                     return
-                self.send_json(store.read_buildings(buildings_path))
+                buildings = store.read_buildings(buildings_path)
+                self.send_json(filter_buildings_for_assignments(buildings, review_config))
                 return
 
             if path == "/api/annotations":
-                self.send_json(store.read_annotations())
+                annotation_store = self.requested_annotation_store()
+                if annotation_store is None:
+                    self.send_text('Workflow mode is not enabled', HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json(annotation_store.read_annotations())
                 return
 
             if path == "/api/cog/info":
@@ -1487,6 +1743,11 @@ def make_handler(store: QaqcStore):
                 self.send_text("Not found", HTTPStatus.NOT_FOUND)
                 return
 
+            annotation_store = self.requested_annotation_store()
+            if annotation_store is None:
+                self.send_text('Workflow mode is not enabled', HTTPStatus.BAD_REQUEST)
+                return
+
             content_length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(content_length) or b"{}")
 
@@ -1494,7 +1755,17 @@ def make_handler(store: QaqcStore):
                 self.send_text("Missing feature id", HTTPStatus.BAD_REQUEST)
                 return
 
-            self.send_json(store.write_annotation(payload))
+            if assigned_feature_ids is not None and str(payload['id']) not in assigned_feature_ids:
+                self.send_text('Feature is not assigned to this user', HTTPStatus.FORBIDDEN)
+                return
+
+            if review_config is not None:
+                if payload.get('annotation_label') not in review_config.annotation_labels:
+                    self.send_text('Invalid annotation label', HTTPStatus.BAD_REQUEST)
+                    return
+                payload['reviewer'] = review_config.user
+
+            self.send_json(annotation_store.write_annotation(payload))
 
         def log_message(self, format: str, *args: object) -> None:
             return
@@ -1503,9 +1774,19 @@ def make_handler(store: QaqcStore):
 
 
 def build_parser() -> argparse.ArgumentParser:
+    '''*!*! Build command-line arguments for fallback and YAML modes.'''
+
     parser = argparse.ArgumentParser(description="Run the local map-feature annotation app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8501)
+    parser.add_argument(
+        '--yaml',
+        type=Path,
+        help=(
+            'Project YAML. Relative paths inside it are resolved from the YAML '
+            'directory; when omitted, the in-app Settings panel is available.'
+        ),
+    )
     parser.add_argument(
         "--buildings",
         type=Path,
@@ -1522,12 +1803,67 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    '''*!*! Load configuration and serve the annotation application.'''
+
     args = build_parser().parse_args()
-    store = QaqcStore(args.buildings, args.annotations)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(store))
-    print(f"Annotation app: http://{args.host}:{args.port}")
-    print(f"Features: {store.buildings_path}")
-    print(f"Annotations: {store.annotations_path}")
+    try:
+        review_config = load_review_config(args.yaml) if args.yaml else None
+    except ConfigError as error:
+        raise SystemExit(f'Invalid project configuration: {error}') from error
+
+    buildings_path = review_config.features_path if review_config else args.buildings
+    annotations_input_path = None
+    annotations_path = args.annotations
+    mode_stores = None
+    if review_config:
+        mode_stores = {}
+        if 'annotation' in review_config.modes:
+            mode_stores['annotation'] = QaqcStore(
+                buildings_path,
+                review_config.annotations_output,
+                review_config.annotations_input,
+            )
+        if 'qaqc' in review_config.modes:
+            mode_stores['qaqc'] = QaqcStore(
+                buildings_path,
+                review_config.qaqc_output,
+                review_config.qaqc_input,
+            )
+        if not mode_stores:
+            raise SystemExit(
+                'Editing-only projects are not supported yet; include annotation or qaqc mode'
+            )
+        first_mode = next(mode for mode in review_config.modes if mode in mode_stores)
+        first_store = mode_stores[first_mode]
+        annotations_input_path = first_store.annotations_input_path
+        annotations_path = first_store.annotations_path
+
+    if annotations_path is None:
+        raise SystemExit('The active workflow has no annotation output path')
+
+    store = QaqcStore(buildings_path, annotations_path, annotations_input_path)
+    server = ThreadingHTTPServer(
+        (args.host, args.port),
+        make_handler(store, review_config, mode_stores),
+    )
+    print(f'Annotation app: http://{args.host}:{args.port}')
+    if review_config:
+        modes_text = ', '.join(review_config.modes)
+        print(f'Configuration: {review_config.source_path}')
+        print(f'Project: {review_config.project_name}')
+        print(f'User: {review_config.user}')
+        print(f'Modes: {modes_text}')
+        print(f'Assigned H3 cells: {len(review_config.todo_h3_indexes):,}')
+    print(f'Features: {store.buildings_path}')
+    if mode_stores:
+        for mode, mode_store in mode_stores.items():
+            if mode_store.annotations_input_path:
+                print(f'{mode.title()} input: {mode_store.annotations_input_path}')
+            print(f'{mode.title()} output: {mode_store.annotations_path}')
+    else:
+        if store.annotations_input_path:
+            print(f'Existing annotations: {store.annotations_input_path}')
+        print(f'Annotations: {store.annotations_path}')
     server.serve_forever()
 
 
