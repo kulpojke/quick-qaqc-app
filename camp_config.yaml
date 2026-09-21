@@ -1,0 +1,49 @@
+# Resolve relative paths from the directory containing this YAML file.
+version: 1
+
+project:
+  name: camp_fire_qaqc
+  fire_date: '2018-11-08'
+
+paths:
+  # - EPSG:4326 polygons containing the feature ID and configured H3 fields.
+  # - If None defaults to fused overture footprints  from as close, before fire
+  #   date as possible
+  # - If 'oldest' fetches oldest overture available on fused (2024-02-15-alpha-0)
+  #   This will likely require heavy editing
+  features: None
+
+  # A local COG path or an HTTP(S) URL.
+  imagery_cog: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/waldoair-campfire/waldoair_campfire.tif
+
+  # Existing merged work is optional and remains read-only.
+  annotations_input: data/qaqc/annotations_merged.csv
+  qaqc_input: data/qaqc/qaqc_merged.csv
+
+  # {user} is replaced with workflow.user.
+  annotations_output: data/qaqc/annotations_{user}.csv
+  qaqc_output: data/qaqc/qaqc_{user}.csv
+  edited_features_output: data/edits/buildings_{user}.geojson
+
+fields:
+  feature_id: id
+  predicted_class: predicted_class
+  annotation_label: annotation_label
+  confidence: confidence
+  h3_prefix: h3_r
+
+annotation:
+  labels:
+    - damaged
+    - undamaged
+    - unknown
+
+workflow:
+  user: Pazazu
+  modes:
+    - annotation
+    - qaqc
+    # - editing
+  todo:
+    - h3_index: 8828308281fffff
+    - h3_index: 8828308283fffff
