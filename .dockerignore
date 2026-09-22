@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+.agents
+.codex
+__pycache__
+*.py[cod]
+*.pdf
+data
+tmp
+readme_for_codex.md

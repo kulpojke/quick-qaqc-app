@@ -1,0 +1,119 @@
+name: damagemap-qaqc
+
+x-application: &application
+  image: damagemap-qaqc:dev
+  build:
+    context: .
+    args:
+      APP_UID: ${APP_UID:-1000}
+      APP_GID: ${APP_GID:-1000}
+
+x-database-environment: &database-environment
+  DATABASE_URL: postgresql://${POSTGRES_USER:-damagemap}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-damagemap}
+  PYTHONNOUSERSITE: '1'
+  PYTHONUNBUFFERED: '1'
+
+services:
+  app:
+    <<: *application
+    command:
+      - python
+      - app.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8501'
+      - --yaml
+      - camp_config.yaml
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database-environment
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/', timeout=5)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    init: true
+    ports:
+      - 127.0.0.1:${APP_PORT:-8501}:8501
+    restart: unless-stopped
+    volumes:
+      - ./camp_config.yaml:/app/camp_config.yaml:ro
+      - ./data:/app/data
+
+  api:
+    <<: *application
+    command:
+      - uvicorn
+      - src.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8000'
+      - --workers
+      - '2'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database-environment
+      AUTH_MODE: ${AUTH_MODE:-development}
+      DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
+      DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    init: true
+    ports:
+      - 127.0.0.1:${API_PORT:-8000}:8000
+    restart: unless-stopped
+
+  migrate:
+    <<: *application
+    command:
+      - python
+      - -m
+      - src.api.migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      <<: *database-environment
+    restart: 'no'
+
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-damagemap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_USER: ${POSTGRES_USER:-damagemap}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-damagemap} -d ${POSTGRES_DB:-damagemap}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    ports:
+      - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
+    restart: unless-stopped
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+
+volumes:
+  postgis_data:
