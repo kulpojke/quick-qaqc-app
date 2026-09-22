@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,13 +19,23 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class OvertureConfig:
+    '''*!*! Configure automatic Overture building retrieval from Fused.'''
+
+    fire_date: date
+    release_selection: str
+    refresh: bool
+
+
+@dataclass(frozen=True)
 class ReviewConfig:
     '''*!*! Validated settings loaded from one project YAML file.'''
 
     source_path: Path
     project_name: str
-    features_path: Path
+    features_path: Path | str
     imagery_cog: str
+    overture: OvertureConfig | None
     annotations_input: Path | None
     qaqc_input: Path | None
     annotations_output: Path | None
@@ -70,6 +81,76 @@ def _optional_string(parent: dict, key: str, default: str = '') -> str:
     if not isinstance(value, str):
         raise ConfigError(f'{key} must be a string')
     return value.strip()
+
+
+def _optional_bool(parent: dict, key: str, default: bool = False) -> bool:
+    '''*!*! Read an optional boolean without coercing strings or numbers.'''
+
+    value = parent.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f'{key} must be true or false')
+    return value
+
+
+def _fire_date(value: object) -> date:
+    '''*!*! Normalize a YAML date or ISO-8601 timestamp to a calendar date.'''
+
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError('project.fire_date must be an ISO-8601 date or timestamp')
+    normalized = value.strip()
+    try:
+        return date.fromisoformat(normalized)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(normalized.replace('Z', '+00:00')).date()
+        except ValueError as error:
+            raise ConfigError(
+                'project.fire_date must be an ISO-8601 date or timestamp'
+            ) from error
+
+
+def _auto_feature_selection(value: object) -> str | None:
+    '''*!*! Return the Fused release strategy encoded by paths.features.'''
+
+    if value is None:
+        return 'before_fire'
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == 'none':
+            return 'before_fire'
+        if normalized == 'oldest':
+            return 'oldest'
+    return None
+
+
+def _parse_overture(
+    root: dict,
+    project: dict,
+    imagery_cog: str,
+    release_selection: str | None,
+) -> OvertureConfig | None:
+    '''*!*! Parse Fused retrieval settings implied by paths.features.'''
+
+    overture = _mapping(root, 'overture')
+    if release_selection is None:
+        if overture:
+            raise ConfigError(
+                'overture settings require paths.features to be None or oldest'
+            )
+        return None
+    if not imagery_cog:
+        raise ConfigError(
+            'paths.imagery_cog is required when paths.features is None or oldest'
+        )
+    return OvertureConfig(
+        fire_date=_fire_date(project.get('fire_date')),
+        release_selection=release_selection,
+        refresh=_optional_bool(overture, 'refresh'),
+    )
 
 
 def _is_http_url(value: str) -> bool:
@@ -120,6 +201,25 @@ def _resolve_cog(value: object, *, base_dir: Path, user: str) -> str:
         return rendered
     path = Path(rendered).expanduser()
     return str(path if path.is_absolute() else (base_dir / path).resolve())
+
+
+def _resolve_feature_source(
+    value: object,
+    *,
+    base_dir: Path,
+    user: str,
+) -> Path | str | None:
+    '''*!*! Resolves a local feature path while preserving HTTP(S) URLs.'''
+
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str):
+        raise ConfigError('paths.features must be a path or HTTP(S) URL')
+    rendered = _expand_user_template(value.strip(), user, 'paths.features')
+    if _is_http_url(rendered):
+        return rendered
+    path = Path(rendered).expanduser()
+    return path if path.is_absolute() else (base_dir / path).resolve()
 
 
 def _parse_modes(workflow: dict) -> tuple[str, ...]:
@@ -211,15 +311,24 @@ def load_review_config(path: Path) -> ReviewConfig:
     user = _required_string(workflow, 'user', 'workflow')
     modes = _parse_modes(workflow)
     base_dir = source_path.parent
+    project_name = _optional_string(project, 'name', source_path.stem)
 
-    features_path = _resolve_path(
-        paths.get('features'),
-        base_dir=base_dir,
-        user=user,
-        field='paths.features',
-    )
-    if features_path is None:
-        raise ConfigError('paths.features is required')
+    features_value = paths.get('features')
+    release_selection = _auto_feature_selection(features_value)
+    if release_selection is None:
+        features_path = _resolve_feature_source(
+            features_value,
+            base_dir=base_dir,
+            user=user,
+        )
+        if features_path is None:
+            raise ConfigError('paths.features must be a path, None, or oldest')
+    else:
+        features_path = (
+            base_dir / 'data' / f'{source_path.stem}_overture_buildings.geojson'
+        ).resolve()
+    imagery_cog = _resolve_cog(paths.get('imagery_cog'), base_dir=base_dir, user=user)
+    overture = _parse_overture(root, project, imagery_cog, release_selection)
 
     annotations_output = _resolve_path(
         paths.get('annotations_output'),
@@ -251,9 +360,10 @@ def load_review_config(path: Path) -> ReviewConfig:
 
     return ReviewConfig(
         source_path=source_path,
-        project_name=_optional_string(project, 'name', source_path.stem),
+        project_name=project_name,
         features_path=features_path,
-        imagery_cog=_resolve_cog(paths.get('imagery_cog'), base_dir=base_dir, user=user),
+        imagery_cog=imagery_cog,
+        overture=overture,
         annotations_input=_resolve_path(
             paths.get('annotations_input'),
             base_dir=base_dir,

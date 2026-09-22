@@ -1,7 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -68,6 +71,74 @@ class ReviewConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, 'paths.qaqc_output'):
                 load_review_config(path)
 
+    def test_preserves_remote_feature_url(self):
+        '''*!*! HTTP feature sources remain URLs rather than local paths.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['paths']['features'] = 'https://example.com/buildings_h3.geojson'
+
+            config = load_review_config(
+                self.write_config(Path(temp_dir), values)
+            )
+
+            self.assertEqual(
+                config.features_path,
+                'https://example.com/buildings_h3.geojson',
+            )
+            self.assertIsNone(config.overture)
+
+    def test_parses_overture_fire_date_and_refresh(self):
+        '''*!*! Overture settings accept an ISO timestamp and strict boolean.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['paths']['features'] = 'None'
+            values['project']['fire_date'] = '2025-06-28T11:12:56Z'
+            values['overture'] = {'refresh': True}
+
+            config = load_review_config(
+                self.write_config(Path(temp_dir), values)
+            )
+
+            self.assertEqual(config.overture.fire_date, date(2025, 6, 28))
+            self.assertEqual(config.overture.release_selection, 'before_fire')
+            self.assertTrue(config.overture.refresh)
+            self.assertEqual(
+                config.features_path,
+                Path(temp_dir) / 'data/project_overture_buildings.geojson',
+            )
+
+    def test_overture_requires_fire_date_and_cog(self):
+        '''*!*! Overture startup retrieval requires its date and COG source.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            values = self.base_config()
+            values['paths']['features'] = 'None'
+            with self.assertRaisesRegex(ConfigError, 'project.fire_date'):
+                load_review_config(self.write_config(directory, values))
+
+            values['project']['fire_date'] = '2025-06-28'
+            values['paths']['imagery_cog'] = ''
+            with self.assertRaisesRegex(ConfigError, 'paths.imagery_cog'):
+                load_review_config(self.write_config(directory, values))
+
+    def test_oldest_feature_sentinel_selects_oldest_fused_release(self):
+        '''*!*! The oldest sentinel enables the post-fire fallback strategy.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['paths']['features'] = 'oldest'
+            values['project']['fire_date'] = '2018-11-08'
+
+            config = load_review_config(
+                self.write_config(Path(temp_dir), values)
+            )
+
+            self.assertEqual(config.overture.release_selection, 'oldest')
+            self.assertEqual(config.overture.fire_date, date(2018, 11, 8))
+
     def test_rejects_unknown_mode(self):
         '''*!*! Unknown workflow modes fail configuration validation.'''
 
@@ -125,6 +196,32 @@ class QaqcStoreTests(unittest.TestCase):
             writer.writeheader()
             writer.writerows(rows)
 
+    def write_geoparquet(self, path: Path) -> None:
+        '''*!*! Write two small GeoParquet features for source-loading tests.'''
+
+        import duckdb
+
+        connection = duckdb.connect()
+        try:
+            connection.execute('LOAD spatial')
+            connection.execute(
+                '''
+CREATE TABLE test_features AS
+SELECT *
+FROM (
+    VALUES
+        ('one', '8828308281fffff', ST_GeomFromText('POINT (0 0)')),
+        ('two', '8828308283fffff', ST_GeomFromText('POINT (1 1)'))
+) AS features(id, h3_r8, geometry)
+'''
+            )
+            connection.execute(
+                'COPY test_features TO ? (FORMAT PARQUET)',
+                [str(path)],
+            )
+        finally:
+            connection.close()
+
     def row(self, feature_id: str, label: str, reviewer: str) -> dict[str, str]:
         '''*!*! Build one canonical annotation row.'''
 
@@ -148,6 +245,61 @@ class QaqcStoreTests(unittest.TestCase):
 
             self.assertEqual(set(store.read_annotations()), {'one', 'two', 'three'})
             self.assertEqual(set(store._read_annotation_file(output_path)), {'two', 'three'})
+
+    def test_reads_remote_feature_geojson(self):
+        '''*!*! A public bucket URL is loaded as the feature collection.'''
+
+        payload = b'{"type":"FeatureCollection","features":[]}'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = 'https://example.com/buildings_h3.geojson'
+            store = QaqcStore(
+                source,
+                Path(temp_dir) / 'annotations.csv',
+            )
+            with patch('app.urlopen', return_value=BytesIO(payload)) as open_url:
+                buildings = store.read_buildings()
+
+        self.assertEqual(buildings['type'], 'FeatureCollection')
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.full_url, source)
+        self.assertEqual(request.get_header('User-agent'), 'damagemap-qaqc/1.0')
+
+    def test_reads_and_filters_local_geoparquet(self):
+        '''*!*! GeoParquet queries return GeoJSON for assigned H3 cells only.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            source = directory / 'buildings.parquet'
+            self.write_geoparquet(source)
+            store = QaqcStore(source, directory / 'annotations.csv')
+
+            buildings = store.read_buildings(
+                h3_assignments={'h3_r8': {'8828308281fffff'}},
+            )
+
+        self.assertEqual(buildings['type'], 'FeatureCollection')
+        self.assertEqual(len(buildings['features']), 1)
+        self.assertEqual(buildings['features'][0]['properties']['id'], 'one')
+        self.assertEqual(buildings['features'][0]['geometry']['type'], 'Point')
+        self.assertNotIn('geometry', buildings['features'][0]['properties'])
+
+    def test_routes_remote_parquet_urls_to_duckdb(self):
+        '''*!*! Bucket Parquet URLs use the range-query feature reader.'''
+
+        source = 'https://example.com/buildings.parquet?signature=test'
+        assignments = {'h3_r8': {'8828308281fffff'}}
+        expected = {'type': 'FeatureCollection', 'features': []}
+        store = QaqcStore(source, Path('annotations.csv'))
+
+        with patch.object(
+            store,
+            '_read_parquet_buildings',
+            return_value=expected,
+        ) as read_parquet:
+            buildings = store.read_buildings(h3_assignments=assignments)
+
+        self.assertIs(buildings, expected)
+        read_parquet.assert_called_once_with(source, assignments)
 
     def test_concurrent_writes_do_not_drop_annotations(self):
         '''*!*! Concurrent writes retain every annotation.'''

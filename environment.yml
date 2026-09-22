@@ -3,12 +3,17 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
+  - duckdb
+  - fastapi
   - gdal
   - geopandas
   - h3-py
   - numpy
   - pandas
   - pillow
+  - psycopg
+  - psycopg-pool
   - rasterio
   - rio-tiler
   - pyyaml
+  - uvicorn

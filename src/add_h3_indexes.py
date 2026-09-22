@@ -57,8 +57,10 @@ def read_features(paths: list[Path]) -> gpd.GeoDataFrame:
 def add_h3_columns(
     features: gpd.GeoDataFrame,
     resolutions: list[int],
+    *,
+    prefix: str = 'h3_r',
 ) -> gpd.GeoDataFrame:
-    '''Add one H3 cell column for each requested resolution.'''
+    '''Adds one prefixed H3 cell column for each requested resolution.'''
     import h3
 
     features = features.copy()
@@ -66,7 +68,7 @@ def add_h3_columns(
     valid_points = ~(points.is_empty | points.isna())
 
     for resolution in resolutions:
-        column = f'h3_r{resolution}'
+        column = f'{prefix}{resolution}'
         features[column] = None
         features.loc[valid_points, column] = [
             h3.latlng_to_cell(point.y, point.x, resolution)
@@ -80,7 +82,7 @@ def dedupe_features(
     features: gpd.GeoDataFrame,
     dedupe_field: str | None,
 ) -> gpd.GeoDataFrame:
-    '''Drop duplicate rows, keeping the last copy of each feature.'''
+    '''Drops duplicate rows, keeping the last copy of each feature.'''
     if not dedupe_field:
         return features
 
@@ -91,7 +93,7 @@ def dedupe_features(
 
 
 def write_geojson(features: gpd.GeoDataFrame, output_path: Path) -> None:
-    '''Write processed features as GeoJSON.'''
+    '''Writes processed features as GeoJSON.'''
     output_path.parent.mkdir(parents=True, exist_ok=True)
     features.to_file(output_path, driver='GeoJSON')
 

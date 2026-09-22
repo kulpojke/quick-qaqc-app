@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-'''*!*! Fetch and cache Overture buildings covering a COG.'''
+'''Fetches and caches Overture buildings covering a COG.'''
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 
@@ -36,7 +36,7 @@ RELEASE_PATTERN = re.compile(r'^(\d{4}-\d{2}-\d{2})(?:-[^/]+)+$')
 
 @dataclass(frozen=True)
 class FetchResult:
-    '''*!*! Describe the local feature cache returned by a fetch operation.'''
+    '''Dataclass describing the local feature cache returned by a fetch operation.'''
 
     path: Path
     feature_count: int
@@ -46,7 +46,7 @@ class FetchResult:
 
 
 def cog_bounds_wgs84(cog_source: str) -> tuple[float, float, float, float]:
-    '''*!*! Read COG bounds and transform them to EPSG:4326.'''
+    '''Reads COG bounds and transform them to EPSG:4326.'''
 
     import rasterio
     from rasterio.warp import transform_bounds
@@ -64,7 +64,7 @@ def cog_bounds_wgs84(cog_source: str) -> tuple[float, float, float, float]:
 
 
 def release_date(release: str) -> date:
-    '''*!*! Extract the publication date from a Fused release name.'''
+    '''Extracts the publication date from a Fused release name.'''
 
     match = RELEASE_PATTERN.fullmatch(release)
     if match is None:
@@ -73,10 +73,17 @@ def release_date(release: str) -> date:
 
 
 def discover_fused_releases() -> tuple[str, ...]:
-    '''*!*! List dated releases advertised by the Fused public bucket.'''
+    '''Returns sorted tuple of dated releases advertised by the Fused public bucket.'''
 
+    request = Request(
+        FUSED_RELEASE_INDEX,
+        headers={
+            'Accept': 'application/xml',
+            'User-Agent': 'damagemap-qaqc/1.0',
+        },
+    )
     try:
-        with urlopen(FUSED_RELEASE_INDEX, timeout=30) as response:
+        with urlopen(request, timeout=30) as response:
             root = ElementTree.fromstring(response.read())
     except (OSError, URLError, ElementTree.ParseError) as error:
         raise RuntimeError(f'Could not list Fused Overture releases: {error}') from error
@@ -98,7 +105,7 @@ def discover_fused_releases() -> tuple[str, ...]:
 
 
 def select_release_before(fire_date: date, releases: tuple[str, ...]) -> str:
-    '''*!*! Select the newest available Fused release before a fire date.'''
+    '''Selects the most recent available Fused release before a fire date.'''
 
     candidates = [release for release in releases if release_date(release) < fire_date]
     if not candidates:
@@ -113,7 +120,7 @@ def select_fused_release(
     releases: tuple[str, ...],
     release_selection: str,
 ) -> str:
-    '''*!*! Select a release using the configured pre-fire or oldest strategy.'''
+    '''Selects a release using the pre-fire or oldest strategy given in config'''
 
     if release_selection == 'before_fire':
         return select_release_before(fire_date, releases)
@@ -125,7 +132,7 @@ def select_fused_release(
 
 
 def fused_building_paths(release: str) -> list[str]:
-    '''*!*! Return remote Parquet globs for one mirrored Overture release.'''
+    '''Returns remote Parquet globs for one mirrored Overture release.'''
 
     base = f'{FUSED_BASE}/{release}/theme=buildings/type=building'
     partition_count = 6 if release_date(release) >= FUSED_PARTITION_CHANGE else 5
@@ -133,7 +140,7 @@ def fused_building_paths(release: str) -> list[str]:
 
 
 def open_fused_connection():
-    '''*!*! Open DuckDB with HTTP/S3 access configured for the Fused mirror.'''
+    '''Opens DuckDB with HTTP/S3 access configured for the Fused mirror.'''
 
     try:
         import duckdb
@@ -144,35 +151,74 @@ def open_fused_connection():
 
     connection = duckdb.connect()
     try:
-        connection.execute('LOAD httpfs')
-    except duckdb.Error:
-        connection.execute('INSTALL httpfs')
-        connection.execute('LOAD httpfs')
-    connection.execute('SET s3_region = ?', ['us-west-2'])
-    connection.execute('SET s3_endpoint = ?', ['s3.us-west-2.amazonaws.com'])
-    connection.execute('SET s3_url_style = ?', ['path'])
+        try:
+            connection.execute('LOAD httpfs')
+        except duckdb.Error:
+            connection.execute('INSTALL httpfs')
+            connection.execute('LOAD httpfs')
+        connection.execute('SET s3_region = ?', ['us-west-2'])
+        connection.execute('SET s3_endpoint = ?', ['s3.us-west-2.amazonaws.com'])
+        connection.execute('SET s3_url_style = ?', ['path'])
+    except duckdb.Error as error:
+        connection.close()
+        raise RuntimeError(f'Could not configure DuckDB for Fused: {error}') from error
     return connection
+
+
+def bbox_field_names(connection, parquet_paths: list[str]) -> tuple[str, str, str, str]:
+    '''*!*! Detects bbox field names used by an Overture Parquet schema.'''
+
+    connection.execute(
+        '''
+SELECT bbox
+FROM read_parquet(?, hive_partitioning = 1, union_by_name = true)
+LIMIT 0
+''',
+        [parquet_paths],
+    )
+    bbox_type = str(connection.description[0][1]).lower()
+    for fields in (
+        ('xmin', 'xmax', 'ymin', 'ymax'),
+        ('minx', 'maxx', 'miny', 'maxy'),
+    ):
+        if all(f'{field} ' in bbox_type for field in fields):
+            return fields
+    raise RuntimeError(f'Unsupported Overture bbox schema: {bbox_type}')
 
 
 def query_fused_buildings(
     release: str,
     bounds_wgs84: tuple[float, float, float, float],
 ):
-    '''*!*! Query building IDs and WKB geometries intersecting a WGS84 bbox.'''
+    '''
+    Uses duckdb to Query building IDs and WKB geometries intersecting a WGS84
+    bbox.
+    '''
+
+    import duckdb
 
     minx, miny, maxx, maxy = bounds_wgs84
-    sql = '''
-SELECT id, geometry
-FROM read_parquet(?, hive_partitioning = 1, union_by_name = true)
-WHERE bbox.xmax >= ? AND bbox.xmin <= ?
-  AND bbox.ymax >= ? AND bbox.ymin <= ?
-'''
+    parquet_paths = fused_building_paths(release)
     connection = open_fused_connection()
     try:
+        xmin_field, xmax_field, ymin_field, ymax_field = bbox_field_names(
+            connection,
+            parquet_paths,
+        )
+        sql = f'''
+SELECT id, geometry
+FROM read_parquet(?, hive_partitioning = 1, union_by_name = true)
+WHERE bbox.{xmax_field} >= ? AND bbox.{xmin_field} <= ?
+  AND bbox.{ymax_field} >= ? AND bbox.{ymin_field} <= ?
+'''
         return connection.execute(
             sql,
-            [fused_building_paths(release), minx, maxx, miny, maxy],
+            [parquet_paths, minx, maxx, miny, maxy],
         ).fetch_df()
+    except duckdb.Error as error:
+        raise RuntimeError(
+            f'Could not query Fused Overture release {release}: {error}'
+        ) from error
     finally:
         connection.close()
 
@@ -184,7 +230,7 @@ def building_geodataframe(
     h3_prefix: str,
     h3_resolutions: tuple[int, ...],
 ):
-    '''*!*! Convert queried WKB rows to app-ready polygons with H3 indexes.'''
+    '''Converts queried WKB rows to polygons with H3 indexes.'''
 
     import geopandas as gpd
     from shapely.geometry import box
@@ -216,7 +262,7 @@ def building_geodataframe(
 
 
 def cache_metadata_path(output_path: Path) -> Path:
-    '''*!*! Return the sidecar path used to validate a feature cache.'''
+    '''Returns the sidecar path used to validate a feature cache.'''
 
     return output_path.with_suffix(f'{output_path.suffix}.overture.json')
 
@@ -231,7 +277,7 @@ def cache_signature(
     h3_prefix: str,
     h3_resolutions: tuple[int, ...],
 ) -> dict:
-    '''*!*! Build the stable inputs used to identify a matching cache.'''
+    '''Builds dict of json ready inputs used to identify a matching cache.'''
 
     return {
         'version': CACHE_VERSION,

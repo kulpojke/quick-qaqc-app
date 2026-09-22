@@ -6,12 +6,13 @@ project:
   fire_date: '2018-11-08'
 
 paths:
-  # - EPSG:4326 polygons containing the feature ID and configured H3 fields.
+  # - EPSG:4326 polygons containing the feature ID and configured H3 fields
+  #   (path or bucket url).
   # - If None defaults to fused overture footprints  from as close, before fire
   #   date as possible
   # - If 'oldest' fetches oldest overture available on fused (2024-02-15-alpha-0)
   #   This will likely require heavy editing
-  features: None
+  features: https://pub-4a2d84525cf448ee8b7202f038c0622c.r2.dev/camp_overture_2024-02-15-alpha-0.parquet
 
   # A local COG path or an HTTP(S) URL.
   imagery_cog: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/waldoair-campfire/waldoair_campfire.tif
@@ -44,6 +45,4 @@ workflow:
     - annotation
     - qaqc
     # - editing
-  todo:
-    - h3_index: 8828308281fffff
-    - h3_index: 8828308283fffff
+  todo: []

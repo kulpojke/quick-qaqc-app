@@ -15,7 +15,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
+from src.fetch_overture_buildings import ensure_overture_buildings
 from src.project_config import ConfigError, ReviewConfig, load_review_config
 
 
@@ -1373,6 +1375,43 @@ def is_http_url(value: str) -> bool:
     return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
 
 
+def is_parquet_source(source: Path | str) -> bool:
+    '''*!*! Return whether a local path or URL names a Parquet feature source.'''
+
+    source_path = (
+        urlparse(str(source)).path
+        if is_http_url(str(source))
+        else str(source)
+    )
+    return Path(source_path).suffix.lower() in {'.parquet', '.geoparquet'}
+
+
+def quote_sql_identifier(value: str) -> str:
+    '''*!*! Quote a DuckDB identifier after escaping embedded quotes.'''
+
+    quote = chr(34)
+    return f'{quote}{value.replace(quote, quote * 2)}{quote}'
+
+
+def quote_sql_string(value: str) -> str:
+    '''*!*! Quote a DuckDB string literal after escaping apostrophes.'''
+
+    quote = chr(39)
+    return f'{quote}{value.replace(quote, quote * 2)}{quote}'
+
+
+def load_duckdb_extension(connection, name: str) -> None:
+    '''*!*! Load a DuckDB extension, installing it when not cached locally.'''
+
+    import duckdb
+
+    try:
+        connection.execute(f'LOAD {name}')
+    except duckdb.Error:
+        connection.execute(f'INSTALL {name}')
+        connection.execute(f'LOAD {name}')
+
+
 def parse_cog_source(value: str) -> CogSource | None:
     '''Parses COG source string into http(s) url, Path, or None'''
     value = value.strip()
@@ -1431,29 +1470,149 @@ def cog_info(cog_source: CogSource) -> dict[str, object]:
 
 
 class QaqcStore:
-    '''*!*! Read project features and layer persisted review records.'''
+    '''Reads project features and layer persisted review records.
+    This will change with backend addition'''
 
     def __init__(
         self,
-        buildings_path: Path,
+        buildings_path: Path | str,
         annotations_path: Path,
         annotations_input_path: Path | None = None,
     ):
-        '''*!*! Configure feature, output, and optional merged-input paths.'''
+        '''Configures feature, output, and optional merged-input paths.'''
 
         self.buildings_path = buildings_path
         self.annotations_path = annotations_path
         self.annotations_input_path = annotations_input_path
         self._write_lock = threading.Lock()
 
-    def read_buildings(self, buildings_path: Path | None = None) -> dict:
-        '''*!*!
-        Load json from buildings_path, fall back to path stored in object.
+    def _read_parquet_buildings(
+        self,
+        source: Path | str,
+        h3_assignments: dict[str, set[str]],
+    ) -> dict:
+        '''*!*! Query local or remote GeoParquet and return a FeatureCollection.'''
+
+        try:
+            import duckdb
+        except ImportError as error:
+            raise RuntimeError(
+                'DuckDB is required to read GeoParquet feature sources'
+            ) from error
+
+        connection = duckdb.connect()
+        try:
+            load_duckdb_extension(connection, 'spatial')
+            if is_http_url(str(source)):
+                load_duckdb_extension(connection, 'httpfs')
+
+            description = connection.execute(
+                'DESCRIBE SELECT * FROM read_parquet(?)',
+                [str(source)],
+            ).fetchall()
+            geometry_columns = [
+                name
+                for name, data_type, *_ in description
+                if str(data_type).startswith('GEOMETRY')
+            ]
+            if not geometry_columns:
+                raise ValueError(f'GeoParquet has no geometry column: {source}')
+            if len(geometry_columns) > 1:
+                raise ValueError(
+                    f'GeoParquet has multiple geometry columns: {geometry_columns}'
+                )
+
+            geometry_column = geometry_columns[0]
+            property_columns = [
+                name for name, *_ in description if name != geometry_column
+            ]
+            available_columns = {name for name, *_ in description}
+            missing_columns = sorted(set(h3_assignments) - available_columns)
+            if missing_columns:
+                missing_text = ', '.join(missing_columns)
+                raise ValueError(
+                    f'GeoParquet is missing assigned H3 column(s): {missing_text}'
+                )
+
+            property_items = []
+            for column in property_columns:
+                property_items.extend(
+                    [quote_sql_string(column), quote_sql_identifier(column)]
+                )
+            property_arguments = ', '.join(property_items)
+            properties_sql = (
+                f'json_object({property_arguments})'
+                if property_items
+                else 'json_object()'
+            )
+
+            parameters: list[object] = [str(source)]
+            assignment_clauses = []
+            for column, indexes in sorted(h3_assignments.items()):
+                ordered_indexes = sorted(indexes)
+                placeholders = ', '.join('?' for _ in ordered_indexes)
+                assignment_clauses.append(
+                    f'{quote_sql_identifier(column)} IN ({placeholders})'
+                )
+                parameters.extend(ordered_indexes)
+            assignment_filter = ' OR '.join(assignment_clauses)
+            where_sql = (
+                f'WHERE {assignment_filter}'
+                if assignment_clauses
+                else ''
+            )
+            geometry_identifier = quote_sql_identifier(geometry_column)
+            rows = connection.execute(
+                f'''
+SELECT json_object(
+    'type', 'Feature',
+    'geometry', ST_AsGeoJSON({geometry_identifier})::JSON,
+    'properties', {properties_sql}
+)
+FROM read_parquet(?)
+{where_sql}
+''',
+                parameters,
+            ).fetchall()
+            return {
+                'type': 'FeatureCollection',
+                'features': [json.loads(feature_json) for feature_json, in rows],
+            }
+        except duckdb.Error as error:
+            raise RuntimeError(
+                f'Could not query GeoParquet feature source {source}: {error}'
+            ) from error
+        finally:
+            connection.close()
+
+    def read_buildings(
+        self,
+        buildings_path: Path | str | None = None,
+        *,
+        h3_assignments: dict[str, set[str]] | None = None,
+    ) -> dict:
+        '''
+        Loads GeoJSON or GeoParquet from buildings_path, falling back to the
+        path stored in the object.
         TODO: currently falls back to harcoded dafault, in future use 
         config.yml to set  default
         '''
-        path = buildings_path or self.buildings_path
-        with path.open() as file:
+        source = self.buildings_path if buildings_path is None else buildings_path
+        assignments = h3_assignments or {}
+        if is_parquet_source(source):
+            return self._read_parquet_buildings(source, assignments)
+        if isinstance(source, str) and is_http_url(source):
+            request = Request(
+                source,
+                headers={
+                    'Accept': 'application/geo+json, application/json',
+                    'User-Agent': 'damagemap-qaqc/1.0',
+                },
+            )
+            with urlopen(request, timeout=120) as response:
+                return json.load(response)
+        path = Path(source)
+        with path.open(encoding='utf-8') as file:
             return json.load(file)
 
     @staticmethod
@@ -1520,6 +1679,23 @@ class QaqcStore:
         return annotation
 
 
+def assignment_columns(
+    review_config: ReviewConfig | None,
+) -> dict[str, set[str]]:
+    '''*!*! Group configured H3 assignments by their feature column.'''
+
+    if review_config is None:
+        return {}
+
+    import h3
+
+    assignments: dict[str, set[str]] = {}
+    for index in review_config.todo_h3_indexes:
+        column = f'{review_config.h3_prefix}{h3.get_resolution(index)}'
+        assignments.setdefault(column, set()).add(index)
+    return assignments
+
+
 def filter_buildings_for_assignments(
     buildings: dict,
     review_config: ReviewConfig | None,
@@ -1529,12 +1705,7 @@ def filter_buildings_for_assignments(
     if review_config is None or not review_config.todo_h3_indexes:
         return buildings
 
-    import h3
-
-    assignments: dict[str, set[str]] = {}
-    for index in review_config.todo_h3_indexes:
-        column = f'{review_config.h3_prefix}{h3.get_resolution(index)}'
-        assignments.setdefault(column, set()).add(index)
+    assignments = assignment_columns(review_config)
 
     filtered = dict(buildings)
     filtered['features'] = [
@@ -1548,6 +1719,31 @@ def filter_buildings_for_assignments(
     return filtered
 
 
+def prepare_configured_features(review_config: ReviewConfig) -> None:
+    '''*!*! Fetch or reuse YAML-configured Overture buildings before serving.'''
+
+    if review_config.overture is None:
+        return
+    result = ensure_overture_buildings(
+        cog_source=review_config.imagery_cog,
+        fire_date=review_config.overture.fire_date,
+        output_path=review_config.features_path,
+        h3_prefix=review_config.h3_prefix,
+        release_selection=review_config.overture.release_selection,
+        refresh=review_config.overture.refresh,
+    )
+    action = 'Reused cached' if result.from_cache else 'Fetched'
+    selection_text = (
+        f'before {review_config.overture.fire_date}'
+        if review_config.overture.release_selection == 'before_fire'
+        else 'oldest available fallback'
+    )
+    print(
+        f'{action} {result.feature_count:,} Overture buildings '
+        f'from {result.release} ({selection_text})'
+    )
+
+
 def make_handler(
     store: QaqcStore,
     review_config: ReviewConfig | None = None,
@@ -1558,9 +1754,10 @@ def make_handler(
     stores = mode_stores or {'annotation': store}
     configured_buildings = None
     assigned_feature_ids = None
+    assignments = assignment_columns(review_config)
     if review_config is not None:
         configured_buildings = filter_buildings_for_assignments(
-            store.read_buildings(),
+            store.read_buildings(h3_assignments=assignments),
             review_config,
         )
         assigned_feature_ids = {
@@ -1617,12 +1814,16 @@ def make_handler(
                 .replace('__TODO_H3_INDEXES__', json.dumps(todo_h3_indexes))
             )
 
-        def requested_buildings_path(self) -> Path:
+        def requested_buildings_source(self) -> Path | str:
+            '''*!*! Returns the configured local or remote feature source.'''
+
             if review_config is not None:
                 return store.buildings_path
             query = parse_qs(urlparse(self.path).query)
             value = query.get("path", [""])[0].strip()
-            return Path(value) if value else store.buildings_path
+            if not value:
+                return store.buildings_path
+            return value if is_http_url(value) else Path(value)
 
         def requested_cog_source(self) -> CogSource | None:
             if review_config is not None:
@@ -1687,14 +1888,20 @@ def make_handler(
                 if configured_buildings is not None:
                     self.send_json(configured_buildings)
                     return
-                buildings_path = self.requested_buildings_path()
-                if not buildings_path.exists():
+                buildings_source = self.requested_buildings_source()
+                if (
+                    isinstance(buildings_source, Path)
+                    and not buildings_source.exists()
+                ):
                     self.send_text(
-                        f"Feature file not found: {buildings_path}",
+                        f"Feature file not found: {buildings_source}",
                         HTTPStatus.NOT_FOUND,
                     )
                     return
-                buildings = store.read_buildings(buildings_path)
+                buildings = store.read_buildings(
+                    buildings_source,
+                    h3_assignments=assignments,
+                )
                 self.send_json(filter_buildings_for_assignments(buildings, review_config))
                 return
 
@@ -1811,6 +2018,12 @@ def main() -> None:
     except ConfigError as error:
         raise SystemExit(f'Invalid project configuration: {error}') from error
 
+    if review_config is not None:
+        try:
+            prepare_configured_features(review_config)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise SystemExit(f'Could not prepare Overture buildings: {error}') from error
+
     buildings_path = review_config.features_path if review_config else args.buildings
     annotations_input_path = None
     annotations_path = args.annotations
@@ -1842,10 +2055,11 @@ def main() -> None:
         raise SystemExit('The active workflow has no annotation output path')
 
     store = QaqcStore(buildings_path, annotations_path, annotations_input_path)
-    server = ThreadingHTTPServer(
-        (args.host, args.port),
-        make_handler(store, review_config, mode_stores),
-    )
+    try:
+        handler = make_handler(store, review_config, mode_stores)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise SystemExit(f'Could not load project features: {error}') from error
+    server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f'Annotation app: http://{args.host}:{args.port}')
     if review_config:
         modes_text = ', '.join(review_config.modes)
