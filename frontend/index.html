@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map Feature Annotator</title>
+  <!-- *!*! Leaflet and H3 stay CDN-hosted until the container build vendors browser dependencies. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/h3-js@4.2.1/dist/h3-js.umd.js"></script>
+  <!-- *!*! Application styling is served directly by the Python HTTP server. -->
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <!-- *!*! Leaflet owns this full-height map surface. -->
+  <div id="map"></div>
+
+  <!-- *!*! Review controls stay separate from the map so map redraws do not replace form state. -->
+  <aside class="panel">
+    <section>
+      <h1 id="project-name">Feature Annotator</h1>
+      <p class="muted">Select an H3 cell, work through its features, then save annotations.</p>
+      <p class="muted" id="workflow-summary"></p>
+    </section>
+
+    <!-- *!*! The settings panel is legacy fallback UI and is hidden whenever YAML config is active. -->
+    <details id="settings-panel">
+      <summary>Settings</summary>
+      <div class="settings-body">
+        <label>
+          Feature GeoJSON
+          <input id="buildings-path">
+        </label>
+        <label>
+          Label field
+          <input id="label-field" placeholder="optional source label field">
+        </label>
+        <label>
+          Annotation labels
+          <input id="annotation-labels" placeholder="comma-separated labels">
+        </label>
+        <label>
+          COG imagery
+          <input id="cog-path" placeholder="optional local path or URL">
+        </label>
+        <label>
+          Class probability field
+          <input id="confidence-field" placeholder="optional">
+        </label>
+        <label>
+          Max confidence
+          <input id="confidence-filter" type="range" min="0" max="4" step="1">
+          <span class="muted" id="confidence-filter-label">All</span>
+        </label>
+        <button id="apply-settings" type="button">Load</button>
+        <div class="settings-status" id="settings-status"></div>
+      </div>
+    </details>
+
+    <section class="stats">
+      <div class="stat"><span class="muted">Total</span><strong id="total-count">0</strong></div>
+      <div class="stat"><span class="muted">Annotated</span><strong id="reviewed-count">0</strong></div>
+      <div class="stat"><span class="muted">Open</span><strong id="open-count">0</strong></div>
+    </section>
+
+    <section class="form">
+      <label>
+        Annotator
+        <input id="reviewer" autocomplete="name" placeholder="annotator name">
+      </label>
+
+      <div class="selected" id="workflow-mode-section">
+        <h2>Task</h2>
+        <div class="label-buttons" id="workflow-mode-buttons"></div>
+      </div>
+
+      <div class="selected">
+        <h2>Selected H3 Cell</h2>
+        <div class="muted">Cell: <code id="selected-cell">none</code></div>
+        <div class="muted">Resolution: <strong id="selected-cell-resolution">none</strong></div>
+        <div class="muted">Progress: <strong id="selected-cell-progress">none</strong></div>
+        <div class="button-row">
+          <button id="previous-building" disabled>Previous</button>
+          <button id="next-open-building" disabled>Next Open</button>
+          <button id="next-building" disabled>Next</button>
+        </div>
+      </div>
+
+      <div class="selected">
+        <h2>Selected Feature</h2>
+        <div class="muted">ID: <code id="selected-id">none</code></div>
+        <button id="toggle-feature-outline" type="button" disabled>Show Outline</button>
+      </div>
+
+      <div class="selected">
+        <h2 id="label-heading">Annotation Label</h2>
+        <div class="label-buttons" id="correct-label-buttons"></div>
+      </div>
+
+      <label>
+        Notes
+        <textarea id="qa-notes" placeholder="optional"></textarea>
+      </label>
+    </section>
+
+    <button id="save" disabled>Save Annotation</button>
+  </aside>
+
+  <!-- *!*! This legend describes both completion cells and individual feature state. -->
+  <div class="legend">
+    <div class="legend-heading">H3 Grid Cells</div>
+    <div><span class="dot cell-empty"></span>Not started</div>
+    <div><span class="dot cell-partial"></span>Partially annotated</div>
+    <div><span class="dot cell-done"></span>Fully annotated</div>
+    <div class="legend-heading">Features</div>
+    <div><span class="dot unreviewed"></span>Unannotated</div>
+    <div><span class="dot annotated"></span>Annotated</div>
+  </div>
+
+  <!-- *!*! A module script permits top-level await while loading server-provided configuration. -->
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -51,6 +51,12 @@ Run the app:
 python app.py
 ```
 
+The browser frontend is kept in `frontend/index.html`, `frontend/styles.css`,
+and `frontend/app.js`. `app.py` serves those files directly and exposes
+runtime project settings through `/api/config`; no frontend build step or
+Python string templating is required. Keeping this directory at the repository
+root also makes it an explicit part of the containerized server application.
+
 ### Containers
 
 The development Compose stack runs the current app alongside a persistent
@@ -65,6 +71,11 @@ docker compose up -d
 Open `http://127.0.0.1:8501`. The app binds only to localhost by default, as
 does PostGIS on port `5432`. Stop the stack with `docker compose down`; the
 named `postgis_data` volume survives container replacement.
+
+In attached mode, `docker compose up` waits for the UI and API health checks,
+then prints their host-facing URLs using `APP_PORT` and `API_PORT` from `.env`.
+Detached mode does not display service logs; use `docker compose logs startup`
+to show the same links after `docker compose up -d`.
 
 The shared FastAPI service runs at `http://127.0.0.1:8000`, with interactive
 documentation at `/docs`. The one-shot `migrate` service applies ordered SQL

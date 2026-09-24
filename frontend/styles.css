@@ -1,0 +1,278 @@
+/* *!*! Shared design tokens keep map overlays and review controls visually consistent. */
+:root {
+  --bg: #f8fafc;
+  --panel: rgba(255, 255, 255, 0.96);
+  --border: rgba(15, 23, 42, 0.16);
+  --text: #17212b;
+  --muted: #64748b;
+  --unreviewed: #64748b;
+  --annotated: #15803d;
+  --cell-empty: #e5e7eb;
+  --cell-partial: #fee08b;
+  --cell-done: #1a9850;
+  --shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+}
+
+/* *!*! The document is fixed to the viewport; the panel owns its own scrolling. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* *!*! Desktop layout reserves a stable right rail for annotation controls. */
+#map {
+  inset: 0 360px 0 0;
+  position: fixed;
+}
+
+.panel {
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  bottom: 0;
+  box-shadow: var(--shadow);
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 14px;
+  overflow: auto;
+  padding: 18px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 360px;
+  z-index: 600;
+}
+
+h1,
+h2 {
+  letter-spacing: 0;
+  margin: 0;
+}
+
+h1 {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+/* *!*! Compact controls favor repeated review work over decorative spacing. */
+.stats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.stat {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.stat strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  display: grid;
+  font-size: 0.78rem;
+  font-weight: 650;
+  gap: 5px;
+}
+
+input,
+select,
+textarea,
+button {
+  box-sizing: border-box;
+  font: inherit;
+  width: 100%;
+}
+
+input,
+select,
+textarea {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 9px;
+}
+
+textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+button {
+  background: #17212b;
+  border: 0;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 12px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.button-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.button-row button {
+  background: #334155;
+  font-size: 0.78rem;
+  padding: 8px;
+}
+
+.label-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.label-buttons button {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.78rem;
+  padding: 8px 10px;
+  width: auto;
+}
+
+.label-buttons button.active {
+  background: #17212b;
+  border-color: #17212b;
+  color: #fff;
+}
+
+.selected {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.selected code {
+  overflow-wrap: anywhere;
+}
+
+details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.settings-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.settings-status {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.3;
+  min-height: 1rem;
+}
+
+/* *!*! The legend floats over the map without intercepting the main review panel. */
+.legend {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  bottom: 18px;
+  box-shadow: var(--shadow);
+  display: grid;
+  font-size: 0.78rem;
+  gap: 7px;
+  left: 16px;
+  padding: 10px;
+  position: fixed;
+  z-index: 500;
+}
+
+.legend div {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.legend-heading {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+
+.legend-heading:first-child {
+  margin-top: 0;
+}
+
+.dot {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+.dot.unreviewed { background: var(--unreviewed); }
+.dot.annotated { background: var(--annotated); }
+.dot.cell-empty { background: var(--cell-empty); }
+.dot.cell-partial { background: var(--cell-partial); }
+.dot.cell-done { background: var(--cell-done); }
+
+/* *!*! Narrow screens move controls below the map while retaining both work surfaces. */
+@media (max-width: 860px) {
+  #map {
+    inset: 0 0 44vh 0;
+  }
+
+  .panel {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    height: 44vh;
+    left: 0;
+    top: auto;
+    width: 100%;
+  }
+}
