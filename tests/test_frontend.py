@@ -3,6 +3,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app import FRONTEND_DIR, QaqcStore, browser_url, make_handler
@@ -32,6 +33,8 @@ class FrontendTests(unittest.TestCase):
         self.assertIn('src="/static/app.js"', html)
         self.assertIn("fetch('/api/config')", javascript)
         self.assertNotIn('__DEFAULT_', html + javascript)
+        self.assertNotIn('settings-panel', html)
+        self.assertNotIn('localStorage', javascript)
 
     def test_handler_serves_frontend_assets_and_runtime_config(self):
         '''*!*! Handler routes expose static assets plus JSON runtime configuration.'''
@@ -41,9 +44,23 @@ class FrontendTests(unittest.TestCase):
             buildings_path = directory / 'buildings.geojson'
             store = QaqcStore(
                 buildings_path,
-                directory / 'annotations.csv',
             )
-            handler_class = make_handler(store)
+            store.read_buildings = Mock(
+                return_value={'type': 'FeatureCollection', 'features': []},
+            )
+            config = SimpleNamespace(
+                predicted_class_field='predicted_class',
+                annotation_labels=('damaged', 'undamaged'),
+                imagery_cog='',
+                confidence_field='',
+                project_name='Test project',
+                feature_id_field='id',
+                h3_prefix='h3_r',
+                user='alice',
+                modes=('annotation',),
+                todo_h3_indexes=(),
+            )
+            handler_class = make_handler(store, config)
             handler = handler_class.__new__(handler_class)
             handler.send_response = Mock()
             handler.send_header = Mock()
@@ -69,7 +86,7 @@ class FrontendTests(unittest.TestCase):
                 config['defaultBuildingsPath'],
                 str(buildings_path),
             )
-            self.assertFalse(config['yamlConfigured'])
+            self.assertEqual(config['configuredProjectName'], 'Test project')
             self.assertEqual(config['workflowModes'], ['annotation'])
 
 

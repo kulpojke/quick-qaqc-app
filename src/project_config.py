@@ -37,11 +37,6 @@ class ReviewConfig:
     features_path: Path | str
     imagery_cog: str
     overture: OvertureConfig | None
-    annotations_input: Path | None
-    qaqc_input: Path | None
-    annotations_output: Path | None
-    qaqc_output: Path | None
-    edited_features_output: Path | None
     feature_id_field: str
     predicted_class_field: str
     annotation_label_field: str
@@ -170,24 +165,6 @@ def _expand_user_template(value: str, user: str, field: str) -> str:
         raise ConfigError(
             f'{field} contains an unsupported template field; only {{user}} is allowed'
         ) from error
-
-
-def _resolve_path(
-    value: object,
-    *,
-    base_dir: Path,
-    user: str,
-    field: str,
-) -> Path | None:
-    '''*!*! Resolve an optional configured path relative to the YAML file.'''
-
-    if value is None or value == '':
-        return None
-    if not isinstance(value, str):
-        raise ConfigError(f'{field} must be a path string')
-    rendered = _expand_user_template(value.strip(), user, field)
-    path = Path(rendered).expanduser()
-    return path if path.is_absolute() else (base_dir / path).resolve()
 
 
 def _resolve_cog(value: object, *, base_dir: Path, user: str) -> str:
@@ -334,34 +311,6 @@ def load_review_config(path: Path) -> ReviewConfig:
     imagery_cog = _resolve_cog(paths.get('imagery_cog'), base_dir=base_dir, user=user)
     overture = _parse_overture(root, project, imagery_cog, release_selection)
 
-    annotations_output = _resolve_path(
-        paths.get('annotations_output'),
-        base_dir=base_dir,
-        user=user,
-        field='paths.annotations_output',
-    )
-    qaqc_output = _resolve_path(
-        paths.get('qaqc_output'),
-        base_dir=base_dir,
-        user=user,
-        field='paths.qaqc_output',
-    )
-    edited_features_output = _resolve_path(
-        paths.get('edited_features_output'),
-        base_dir=base_dir,
-        user=user,
-        field='paths.edited_features_output',
-    )
-    required_outputs = {
-        'annotation': (annotations_output, 'paths.annotations_output'),
-        'qaqc': (qaqc_output, 'paths.qaqc_output'),
-        'editing': (edited_features_output, 'paths.edited_features_output'),
-    }
-    for mode in modes:
-        value, field = required_outputs[mode]
-        if value is None:
-            raise ConfigError(f'{field} is required when {mode} mode is enabled')
-
     return ReviewConfig(
         source_path=source_path,
         project_id=project_id,
@@ -369,21 +318,6 @@ def load_review_config(path: Path) -> ReviewConfig:
         features_path=features_path,
         imagery_cog=imagery_cog,
         overture=overture,
-        annotations_input=_resolve_path(
-            paths.get('annotations_input'),
-            base_dir=base_dir,
-            user=user,
-            field='paths.annotations_input',
-        ),
-        qaqc_input=_resolve_path(
-            paths.get('qaqc_input'),
-            base_dir=base_dir,
-            user=user,
-            field='paths.qaqc_input',
-        ),
-        annotations_output=annotations_output,
-        qaqc_output=qaqc_output,
-        edited_features_output=edited_features_output,
         feature_id_field=_optional_string(fields, 'feature_id', 'id'),
         predicted_class_field=_optional_string(fields, 'predicted_class', 'predicted_class'),
         annotation_label_field=_optional_string(fields, 'annotation_label', 'annotation_label'),
