@@ -94,6 +94,9 @@ The initial API supports:
 - overlapping H3 assignments for multiple reviewers; and
 - project revisions that can drive periodic GeoParquet exports.
 
+See [`migrations/README.md`](migrations/README.md) for the database tables,
+relationships, history triggers, concurrency model, and export tracking.
+
 PostGIS remains the mutable source of truth. GeoParquet in R2 will be an
 immutable, versioned export rather than a file edited by reviewer clients.
 
