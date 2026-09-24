@@ -60,7 +60,7 @@ root also makes it an explicit part of the containerized server application.
 ### Containers
 
 The development Compose stack runs the current app alongside a persistent
-PostGIS database reserved for the shared API migration:
+PostGIS database:
 
 ```bash
 cp .env.example .env
@@ -79,8 +79,16 @@ to show the same links after `docker compose up -d`.
 
 The shared FastAPI service runs at `http://127.0.0.1:8000`, with interactive
 documentation at `/docs`. The one-shot `migrate` service applies ordered SQL
-migrations before either server starts. The current UI still writes review
-CSVs beneath `data/`; its browser calls have not yet been switched to the API.
+migrations. The `bootstrap` service then imports the configured GeoParquet
+into PostGIS once, normalizes its H3 columns, and synchronizes configured tasks
+and reviewer assignments before either server starts.
+
+In Compose, the UI reads reviewer-assigned features from PostGIS. It still
+writes review CSVs beneath `data/`; moving those writes to the shared API is
+the next database integration phase.
+
+Database bootstrap requires `paths.features` to point to local or HTTP(S)
+GeoParquet. File-based app runs outside Compose continue to support GeoJSON.
 
 During development, API requests require an `X-Reviewer-ID` header. This mode
 is intentionally disabled when `AUTH_MODE` is anything other than
@@ -117,6 +125,7 @@ Source Cooperative mirror when they start:
 
 ```yaml
 project:
+  id: 'example_fire'
   name: 'example_fire'
   fire_date: '2025-06-28T11:12:56Z'
 

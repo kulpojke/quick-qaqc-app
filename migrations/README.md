@@ -24,6 +24,7 @@ afterward.
 | `annotation_history` | Previous versions of changed annotations |
 | `feature_history` | Previous versions of edited features |
 | `export_state` | Most recent project revision exported to GeoParquet |
+| `feature_imports` | Immutable GeoParquet source used to initialize a project |
 
 The principal relationships are:
 
@@ -190,15 +191,27 @@ task, feature, or reviewer assignment removes dependent current rows that can
 no longer be valid. History rows are independent snapshots and are not part of
 those cascades.
 
+## Initial Feature Import
+
+[`002_feature_imports.sql`](002_feature_imports.sql) records the source and
+feature count from the successful initial GeoParquet import. The bootstrap
+service uses this row to make startup idempotent: the same source is reused,
+while a different source is rejected instead of replacing database edits.
+
+The import record is written in the same transaction as the project features
+and normalized H3 rows. A failed or interrupted import therefore leaves no
+partially initialized project.
+
 ## What This Migration Does Not Do
 
-The migration creates database structure only. It does not:
+The migrations create database structure only. They do not:
 
-- import initial building features;
-- create projects, tasks, reviewers, or assignments;
+- execute the initial building import;
+- execute project, task, reviewer, or assignment setup;
 - authenticate users;
 - export GeoParquet; or
 - connect the legacy CSV-writing browser workflow to PostGIS.
 
-Those operations belong to the API, bootstrap/import tooling, authentication
-layer, and periodic export worker.
+`src/api/bootstrap.py` performs the first two operations at container startup.
+The remaining operations belong to the API, authentication layer, and
+periodic export worker.

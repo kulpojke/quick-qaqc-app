@@ -32,6 +32,7 @@ class ReviewConfig:
     '''*!*! Validated settings loaded from one project YAML file.'''
 
     source_path: Path
+    project_id: str
     project_name: str
     features_path: Path | str
     imagery_cog: str
@@ -312,6 +313,9 @@ def load_review_config(path: Path) -> ReviewConfig:
     modes = _parse_modes(workflow)
     base_dir = source_path.parent
     project_name = _optional_string(project, 'name', source_path.stem)
+    project_id = _optional_string(project, 'id', project_name)
+    if not project_id:
+        raise ConfigError('project.id must be a non-empty string')
 
     features_value = paths.get('features')
     release_selection = _auto_feature_selection(features_value)
@@ -360,6 +364,7 @@ def load_review_config(path: Path) -> ReviewConfig:
 
     return ReviewConfig(
         source_path=source_path,
+        project_id=project_id,
         project_name=project_name,
         features_path=features_path,
         imagery_cog=imagery_cog,

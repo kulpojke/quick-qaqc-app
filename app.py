@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+from src.api.feature_store import read_project_features
 from src.fetch_overture_buildings import ensure_overture_buildings
 from src.project_config import ConfigError, ReviewConfig, load_review_config
 
@@ -163,20 +164,25 @@ def cog_info(cog_source: CogSource) -> dict[str, object]:
 
 
 class QaqcStore:
-    '''Reads project features and layer persisted review records.
-    This will change with backend addition'''
+    '''*!*! Read project features and layer persisted review records.'''
 
     def __init__(
         self,
         buildings_path: Path | str,
         annotations_path: Path,
         annotations_input_path: Path | None = None,
+        database_project_id: str | None = None,
+        database_reviewer_id: str | None = None,
+        feature_id_field: str = DEFAULT_FEATURE_ID_FIELD,
     ):
-        '''Configures feature, output, and optional merged-input paths.'''
+        '''*!*! Configure feature, database, and annotation sources.'''
 
         self.buildings_path = buildings_path
         self.annotations_path = annotations_path
         self.annotations_input_path = annotations_input_path
+        self.database_project_id = database_project_id
+        self.database_reviewer_id = database_reviewer_id
+        self.feature_id_field = feature_id_field
         self._write_lock = threading.Lock()
 
     def _read_parquet_buildings(
@@ -284,12 +290,19 @@ FROM read_parquet(?)
         *,
         h3_assignments: dict[str, set[str]] | None = None,
     ) -> dict:
-        '''
-        Loads GeoJSON or GeoParquet from buildings_path, falling back to the
-        path stored in the object.
-        TODO: currently falls back to harcoded dafault, in future use 
-        config.yml to set  default
-        '''
+        '''*!*! Load assigned PostGIS features or the configured feature file.'''
+        if (
+            buildings_path is None
+            and self.database_project_id
+            and self.database_reviewer_id
+            and os.environ.get('DATABASE_URL')
+        ):
+            return read_project_features(
+                self.database_project_id,
+                self.database_reviewer_id,
+                feature_id_field=self.feature_id_field,
+            )
+
         source = self.buildings_path if buildings_path is None else buildings_path
         assignments = h3_assignments or {}
         if is_parquet_source(source):
@@ -760,7 +773,6 @@ def main() -> None:
             raise SystemExit(f'Could not prepare Overture buildings: {error}') from error
 
     buildings_path = review_config.features_path if review_config else args.buildings
-    #TODO: Is this where postGIS sconnection goes?
     annotations_input_path = None
     annotations_path = args.annotations
     # this reads modes from config
@@ -772,12 +784,18 @@ def main() -> None:
                 buildings_path,
                 review_config.annotations_output,
                 review_config.annotations_input,
+                review_config.project_id,
+                review_config.user,
+                review_config.feature_id_field,
             )
         if 'qaqc' in review_config.modes:
             mode_stores['qaqc'] = QaqcStore(
                 buildings_path,
                 review_config.qaqc_output,
                 review_config.qaqc_input,
+                review_config.project_id,
+                review_config.user,
+                review_config.feature_id_field,
             )
         if not mode_stores:
             raise SystemExit(
@@ -791,7 +809,14 @@ def main() -> None:
     if annotations_path is None:
         raise SystemExit('The active workflow has no annotation output path')
 
-    store = QaqcStore(buildings_path, annotations_path, annotations_input_path)
+    store = QaqcStore(
+        buildings_path,
+        annotations_path,
+        annotations_input_path,
+        review_config.project_id if review_config else None,
+        review_config.user if review_config else None,
+        review_config.feature_id_field if review_config else DEFAULT_FEATURE_ID_FIELD,
+    )
     try:
         handler = make_handler(store, review_config, mode_stores)
     except (OSError, RuntimeError, ValueError) as error:
@@ -806,7 +831,12 @@ def main() -> None:
         print(f'User: {review_config.user}')
         print(f'Modes: {modes_text}')
         print(f'Assigned H3 cells: {len(review_config.todo_h3_indexes):,}')
-    print(f'Features: {store.buildings_path}')
+    feature_source = (
+        f'PostGIS project {review_config.project_id}'
+        if review_config and os.environ.get('DATABASE_URL')
+        else store.buildings_path
+    )
+    print(f'Features: {feature_source}')
     if mode_stores:
         for mode, mode_store in mode_stores.items():
             if mode_store.annotations_input_path:

@@ -2,6 +2,7 @@
 version: 1
 
 project:
+  id: camp_fire_qaqc
   name: camp_fire_qaqc
   fire_date: '2018-11-08'
 

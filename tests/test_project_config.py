@@ -51,6 +51,7 @@ class ReviewConfigTests(unittest.TestCase):
             config = load_review_config(self.write_config(directory, self.base_config()))
 
             self.assertEqual(config.features_path, directory / 'features.geojson')
+            self.assertEqual(config.project_id, 'test-review')
             self.assertEqual(config.imagery_cog, str(directory / 'imagery/image.tif'))
             self.assertEqual(
                 config.annotations_output,
@@ -59,6 +60,20 @@ class ReviewConfigTests(unittest.TestCase):
             self.assertEqual(config.feature_id_field, 'building_id')
             self.assertEqual(config.h3_prefix, 'cell_')
             self.assertEqual(config.todo_h3_indexes, ('8828308281fffff',))
+
+    def test_project_id_can_differ_from_display_name(self):
+        '''*!*! A stable project ID is independent of its display name.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['project'] = {'id': 'stable-id', 'name': 'Display Name'}
+
+            config = load_review_config(
+                self.write_config(Path(temp_dir), values)
+            )
+
+            self.assertEqual(config.project_id, 'stable-id')
+            self.assertEqual(config.project_name, 'Display Name')
 
     def test_requires_output_for_each_enabled_mode(self):
         '''*!*! Every selected workflow mode requires its output path.'''
@@ -263,6 +278,31 @@ FROM (
         request = open_url.call_args.args[0]
         self.assertEqual(request.full_url, source)
         self.assertEqual(request.get_header('User-agent'), 'damagemap-qaqc/1.0')
+
+    def test_reads_configured_project_features_from_postgis(self):
+        '''*!*! YAML mode uses PostGIS when a database URL is configured.'''
+
+        expected = {'type': 'FeatureCollection', 'features': []}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = QaqcStore(
+                Path(temp_dir) / 'features.parquet',
+                Path(temp_dir) / 'annotations.csv',
+                database_project_id='project-one',
+                database_reviewer_id='alice',
+                feature_id_field='building_id',
+            )
+            with (
+                patch.dict('os.environ', {'DATABASE_URL': 'postgresql://test'}),
+                patch('app.read_project_features', return_value=expected) as read,
+            ):
+                buildings = store.read_buildings()
+
+        self.assertIs(buildings, expected)
+        read.assert_called_once_with(
+            'project-one',
+            'alice',
+            feature_id_field='building_id',
+        )
 
     def test_reads_and_filters_local_geoparquet(self):
         '''*!*! GeoParquet queries return GeoJSON for assigned H3 cells only.'''

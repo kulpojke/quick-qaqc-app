@@ -26,7 +26,7 @@ services:
       - --yaml
       - camp_config.yaml
     depends_on:
-      migrate:
+      bootstrap:
         condition: service_completed_successfully
     environment:
       <<: *database-environment
@@ -60,7 +60,7 @@ services:
       - --workers
       - '2'
     depends_on:
-      migrate:
+      bootstrap:
         condition: service_completed_successfully
     environment:
       <<: *database-environment
@@ -94,6 +94,25 @@ services:
     environment:
       <<: *database-environment
     restart: 'no'
+
+  # *!*! Import the immutable source once and synchronize YAML task assignments.
+  bootstrap:
+    <<: *application
+    command:
+      - python
+      - -m
+      - src.api.bootstrap
+      - --yaml
+      - camp_config.yaml
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database-environment
+    restart: 'no'
+    volumes:
+      - ./camp_config.yaml:/app/camp_config.yaml:ro
+      - ./data:/app/data
 
   # *!*! Print host-facing links only after both browser-facing services are healthy.
   startup:
