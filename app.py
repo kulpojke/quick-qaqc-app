@@ -1642,13 +1642,16 @@ FROM read_parquet(?)
 
     def read_annotations(self) -> dict[str, dict[str, str]]:
         '''*!*! Overlay this user's output records on merged input records.'''
-
+        # TODO: what does this do? Do we need it?
         annotations = self._read_annotation_file(self.annotations_input_path)
         annotations.update(self._read_annotation_file(self.annotations_path))
         return annotations
 
     def write_annotation(self, annotation: dict[str, str]) -> dict[str, str]:
-        '''*!*! Atomically add or replace one record in the user output.'''
+        '''
+        Atomically add or replace one record in the user output
+        TODO: currently csv, this is where it should write to DB.
+        '''
 
         with self._write_lock:
             # Only rewrite this user's output. Loaded merged input remains read-only.
@@ -2025,8 +2028,10 @@ def main() -> None:
             raise SystemExit(f'Could not prepare Overture buildings: {error}') from error
 
     buildings_path = review_config.features_path if review_config else args.buildings
+    #TODO: Is this where postGIS sconnection goes?
     annotations_input_path = None
     annotations_path = args.annotations
+    # this reads modes from config
     mode_stores = None
     if review_config:
         mode_stores = {}
