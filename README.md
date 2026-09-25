@@ -2,21 +2,15 @@
 
 ## Data requirements
 
-The application requires:
-
-1. GeoParquet in EPSG:4326 containing:
-    + polygon or multipolygon geometries
-    + an id field
-    + H3 columns h3_r5 through h3_r10
-
-
-2. Annotation labels in the project YAML.
-
-3. A COG of imagery for the annotator to use as comparison.
+The application requires one or more GeoParquet layers containing point or
+polygon features, annotation labels, and a COG. Each YAML layer names its
+source CRS and relevant columns. Bootstrap reprojects features to EPSG:4326,
+keeps only geometries intersecting the COG bounds, and generates H3 membership.
 
 ## Helper scripts
 
-Chances are you do not have H3 indexes  attached to your polygons.  You can use `src/add_h3_indexes.py` to attach them.
+Bootstrap generates H3 membership automatically. `src/add_h3_indexes.py`
+remains available for standalone data preparation outside the database flow.
 
 For building a COG of imagery , `src/build_cog.py` has been provided
 
@@ -27,12 +21,6 @@ Build the conda environment:
 ```bash
 conda env create -f environment.yml
 conda activate damagemap-qaqc
-```
-
-If your polygons do not already have H3 columns, add them first:
-
-```bash
-python src/add_h3_indexes.py --input path/to/features.geojson --output path/to/features_h3.geojson
 ```
 
 If needed, build a COG from a directory of TIFF imagery:
@@ -75,16 +63,16 @@ to show the same links after `docker compose up -d`.
 
 The shared FastAPI service runs at `http://127.0.0.1:8000`, with interactive
 documentation at `/docs`. The one-shot `migrate` service applies ordered SQL
-migrations. The `bootstrap` service then imports the configured GeoParquet
-into PostGIS once, normalizes its H3 columns, and synchronizes configured tasks
-and reviewer assignments before either server starts.
+migrations. The `bootstrap` service then imports each configured GeoParquet
+layer into PostGIS once, filters it to the COG, generates normalized H3 rows,
+and synchronizes layer tasks and reviewer assignments before either server
+starts.
 
 The UI reads reviewer-assigned features and review records from PostGIS.
-Annotation and QA/QC submissions are written directly to the `annotations`
-table and preserve independent records for each reviewer.
+Annotation submissions are written directly to the `annotations` table and
+preserve independent records for each reviewer.
 
-Database bootstrap requires `paths.features` to point to local or HTTP(S)
-GeoParquet.
+Each `layers[].source` must point to local or HTTP(S) GeoParquet.
 
 During development, API requests require an `X-Reviewer-ID` header. This mode
 is intentionally disabled when `AUTH_MODE` is anything other than
@@ -119,30 +107,54 @@ every feature available.
 A project configuration supplies only server-controlled runtime values:
 
 ```yaml
+version: 2
+
 project:
   id: 'example_fire'
   name: 'example_fire'
-  fire_date: '2025-06-28T11:12:56Z'
 
 paths:
-  features: 'https://example.com/buildings.parquet'
   imagery_cog: 'https://example.com/post-fire-imagery.tif'
 
-fields:
-  feature_id: 'id'
-  h3_prefix: 'h3_r'
+layers:
+  - id: buildings
+    source: 'https://example.com/buildings.parquet'
+    crs: 'EPSG:4326'
+    geometry_types: [Polygon, MultiPolygon]
+    fields:
+      feature_id: id
+      predicted_class: predicted_class
+      confidence: confidence
+    h3_resolutions: [5, 6, 7, 8, 9, 10]
+    modes: [annotation, editing]
+    editing:
+      move: true
+      reshape: true
+
+  - id: observations
+    source: 'https://example.com/points.parquet'
+    crs: 'EPSG:6414'
+    geometry_types: [Point]
+    fields:
+      feature_id: GLOBALID
+      predicted_class: DAMAGE
+      display: [DAMAGE, STRUCTURETYPE, SITEADDRESS]
+    h3_resolutions: [5, 6, 7, 8, 9, 10]
+    modes: [annotation, editing]
+    editing:
+      move: true
 
 annotation:
   labels: ['damaged', 'undamaged', 'unknown']
 
 workflow:
   user: 'alice'
-  modes: ['annotation', 'qaqc']
+  modes: ['annotation', 'editing']
   todo: []
 ```
 
-The configured database bootstrap source must be a local or public/signed
-HTTP(S) GeoParquet object. DuckDB reads that source once to populate PostGIS.
+Configured sources must be local or public/signed HTTP(S) GeoParquet objects.
+DuckDB reads and spatially filters each source once to populate PostGIS.
 
 The standalone fetch utility can retrieve Overture footprints using COG bounds
 and a fire date. Its GeoJSON output must be converted to GeoParquet before
@@ -155,10 +167,12 @@ python src/fetch_overture_buildings.py \
   --output data/features/buildings.geojson
 ```
 
-`annotation` and `qaqc` can be enabled together and use independent database
-tasks. The `editing` mode is represented in the database and API, but geometry
-editing is not exposed in the browser yet, so an editing-only project cannot
-be started.
+Annotation and editing use independent tasks per layer; QA/QC is no longer a
+separate configured mode. The layer panel provides an annotation or
+geometry-editing mode for each eligible layer. The active layer is interactive
+and rendered above visible context layers. Point layers remain hidden until an
+H3 cell is selected. Point placement and Leaflet-Geoman polygon changes are
+saved with optimistic version checking.
 
 Open `http://127.0.0.1:8501` in a web browser. Project, imagery, labels,
 reviewer, modes, and assignments come from the YAML configuration.

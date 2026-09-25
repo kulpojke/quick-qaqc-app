@@ -1,4 +1,3 @@
-from datetime import date
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,7 +10,7 @@ from src.project_config import ConfigError, load_review_config
 
 
 class ReviewConfigTests(unittest.TestCase):
-    '''*!*! Tests for YAML-only project configuration.'''
+    '''*!*! Tests for layer-aware YAML project configuration.'''
 
     def write_config(self, directory: Path, values: dict) -> Path:
         '''*!*! Write one temporary YAML configuration for a test.'''
@@ -21,119 +20,116 @@ class ReviewConfigTests(unittest.TestCase):
         return path
 
     def base_config(self) -> dict:
-        '''*!*! Return a minimal valid annotation project configuration.'''
+        '''*!*! Return a minimal project with point and polygon layers.'''
 
         return {
-            'version': 1,
-            'project': {'name': 'test-review'},
-            'paths': {
-                'features': 'features.parquet',
-                'imagery_cog': 'imagery/image.tif',
-            },
-            'fields': {'feature_id': 'building_id', 'h3_prefix': 'cell_'},
+            'version': 2,
+            'project': {'id': 'test-review', 'name': 'Test review'},
+            'paths': {'imagery_cog': 'imagery/image.tif'},
+            'fields': {'predicted_class': 'prediction'},
+            'layers': [
+                {
+                    'id': 'buildings',
+                    'name': 'Buildings',
+                    'source': 'features/buildings.parquet',
+                    'geometry_types': ['Polygon', 'MultiPolygon'],
+                    'fields': {
+                        'feature_id': 'building_id',
+                        'predicted_class': 'prediction',
+                        'confidence': 'score',
+                        'display': ['address'],
+                    },
+                    'h3_prefix': 'building_h3_r',
+                    'modes': ['annotation'],
+                },
+                {
+                    'id': 'points',
+                    'name': 'Points',
+                    'source': 'https://example.com/california-points.parquet',
+                    'crs': 'EPSG:6414',
+                    'geometry_types': ['Point'],
+                    'fields': {'feature_id': 'point_id'},
+                    'modes': ['annotation', 'editing'],
+                    'editing': {'move': True},
+                },
+            ],
             'annotation': {'labels': ['damaged', 'undamaged']},
             'workflow': {
                 'user': 'alice',
-                'modes': ['annotation'],
+                'modes': ['annotation', 'editing'],
                 'todo': [{'h3_index': '8828308281fffff'}],
             },
         }
 
-    def test_resolves_paths_from_yaml_directory(self):
-        '''*!*! Feature and imagery paths resolve from the YAML directory.'''
+    def test_resolves_layer_and_imagery_paths(self):
+        '''*!*! Local sources resolve while bucket URLs remain unchanged.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
             config = load_review_config(self.write_config(directory, self.base_config()))
 
-            self.assertEqual(config.features_path, directory / 'features.parquet')
             self.assertEqual(config.project_id, 'test-review')
             self.assertEqual(config.imagery_cog, str(directory / 'imagery/image.tif'))
-            self.assertEqual(config.feature_id_field, 'building_id')
-            self.assertEqual(config.h3_prefix, 'cell_')
+            self.assertEqual(
+                config.layers[0].source,
+                directory / 'features/buildings.parquet',
+            )
+            self.assertEqual(
+                config.layers[1].source,
+                'https://example.com/california-points.parquet',
+            )
+            self.assertEqual(config.layers[0].feature_id_field, 'building_id')
+            self.assertEqual(config.layers[0].predicted_class_field, 'prediction')
+            self.assertEqual(config.layers[0].display_fields, ('address',))
+            self.assertEqual(config.layers[0].h3_prefix, 'building_h3_r')
+            self.assertEqual(config.layers[1].geometry_types, ('Point',))
+            self.assertEqual(config.layers[1].source_crs, 'EPSG:6414')
+            self.assertTrue(config.layers[1].editing.move)
             self.assertEqual(config.todo_h3_indexes, ('8828308281fffff',))
 
-    def test_project_id_can_differ_from_display_name(self):
-        '''*!*! A stable project ID is independent of its display name.'''
+    def test_rejects_version_one_configuration(self):
+        '''*!*! The old single-feature-source schema fails with a clear version error.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['project'] = {'id': 'stable-id', 'name': 'Display Name'}
+            values['version'] = 1
+            path = self.write_config(Path(temp_dir), values)
 
-            config = load_review_config(
-                self.write_config(Path(temp_dir), values)
-            )
+            with self.assertRaisesRegex(ConfigError, 'expected 2'):
+                load_review_config(path)
 
-            self.assertEqual(config.project_id, 'stable-id')
-            self.assertEqual(config.project_name, 'Display Name')
-
-    def test_preserves_remote_feature_url(self):
-        '''*!*! HTTP feature sources remain URLs rather than local paths.'''
+    def test_rejects_duplicate_layer_ids(self):
+        '''*!*! Layer IDs must uniquely identify import and export streams.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['paths']['features'] = 'https://example.com/buildings.parquet'
+            values['layers'][1]['id'] = 'buildings'
+            path = self.write_config(Path(temp_dir), values)
 
-            config = load_review_config(
-                self.write_config(Path(temp_dir), values)
-            )
+            with self.assertRaisesRegex(ConfigError, 'Duplicate layer id'):
+                load_review_config(path)
 
-            self.assertEqual(
-                config.features_path,
-                'https://example.com/buildings.parquet',
-            )
-            self.assertIsNone(config.overture)
-
-    def test_parses_overture_fire_date_and_refresh(self):
-        '''*!*! Overture settings accept an ISO timestamp and strict boolean.'''
+    def test_rejects_unsupported_geometry_type(self):
+        '''*!*! Layers accept only supported point and polygon geometry types.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['paths']['features'] = 'None'
-            values['project']['fire_date'] = '2025-06-28T11:12:56Z'
-            values['overture'] = {'refresh': True}
+            values['layers'][0]['geometry_types'] = ['LineString']
+            path = self.write_config(Path(temp_dir), values)
 
-            config = load_review_config(
-                self.write_config(Path(temp_dir), values)
-            )
+            with self.assertRaisesRegex(ConfigError, 'unsupported geometry type'):
+                load_review_config(path)
 
-            self.assertEqual(config.overture.fire_date, date(2025, 6, 28))
-            self.assertEqual(config.overture.release_selection, 'before_fire')
-            self.assertTrue(config.overture.refresh)
-            self.assertEqual(
-                config.features_path,
-                Path(temp_dir) / 'data/project_overture_buildings.geojson',
-            )
-
-    def test_overture_requires_fire_date_and_cog(self):
-        '''*!*! Overture retrieval configuration requires its date and COG.'''
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            directory = Path(temp_dir)
-            values = self.base_config()
-            values['paths']['features'] = 'None'
-            with self.assertRaisesRegex(ConfigError, 'project.fire_date'):
-                load_review_config(self.write_config(directory, values))
-
-            values['project']['fire_date'] = '2025-06-28'
-            values['paths']['imagery_cog'] = ''
-            with self.assertRaisesRegex(ConfigError, 'paths.imagery_cog'):
-                load_review_config(self.write_config(directory, values))
-
-    def test_oldest_feature_sentinel_selects_oldest_fused_release(self):
-        '''*!*! The oldest sentinel enables the post-fire fallback strategy.'''
+    def test_editing_mode_requires_a_capability(self):
+        '''*!*! Editable layers explicitly state which operations are allowed.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['paths']['features'] = 'oldest'
-            values['project']['fire_date'] = '2018-11-08'
+            values['layers'][1].pop('editing')
+            path = self.write_config(Path(temp_dir), values)
 
-            config = load_review_config(
-                self.write_config(Path(temp_dir), values)
-            )
-
-            self.assertEqual(config.overture.release_selection, 'oldest')
-            self.assertEqual(config.overture.fire_date, date(2018, 11, 8))
+            with self.assertRaisesRegex(ConfigError, 'no editing capabilities'):
+                load_review_config(path)
 
     def test_rejects_unknown_mode(self):
         '''*!*! Unknown workflow modes fail configuration validation.'''
@@ -141,6 +137,17 @@ class ReviewConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
             values['workflow']['modes'] = ['triage']
+            path = self.write_config(Path(temp_dir), values)
+
+            with self.assertRaisesRegex(ConfigError, 'Unsupported workflow mode'):
+                load_review_config(path)
+
+    def test_rejects_removed_qaqc_mode(self):
+        '''*!*! QA/QC is no longer configured as a separate task mode.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['workflow']['modes'] = ['annotation', 'qaqc']
             path = self.write_config(Path(temp_dir), values)
 
             with self.assertRaisesRegex(ConfigError, 'Unsupported workflow mode'):
@@ -165,21 +172,17 @@ class QaqcStoreTests(unittest.TestCase):
         '''*!*! Feature state delegates to the configured PostGIS project.'''
 
         expected = {'type': 'FeatureCollection', 'features': []}
-        store = QaqcStore('project-one', 'alice', 'building_id')
+        store = QaqcStore('project-one', 'alice')
         with patch('app.read_project_features', return_value=expected) as read:
-            buildings = store.read_buildings()
+            features = store.read_buildings()
 
-        self.assertIs(buildings, expected)
-        read.assert_called_once_with(
-            'project-one',
-            'alice',
-            feature_id_field='building_id',
-        )
+        self.assertIs(features, expected)
+        read.assert_called_once_with('project-one', 'alice')
 
     def test_reads_reviews_from_postgis(self):
         '''*!*! Review state delegates to the configured PostGIS project.'''
 
-        expected = {'one': {'annotation_label': 'damaged'}}
+        expected = {'["points","one"]': {'annotation_label': 'damaged'}}
         store = QaqcStore('project-one', 'alice')
         with patch('app.read_reviewer_annotations', return_value=expected) as read:
             annotations = store.read_annotations('annotation')
@@ -188,23 +191,28 @@ class QaqcStoreTests(unittest.TestCase):
         read.assert_called_once_with('project-one', 'alice', 'annotation')
 
     def test_writes_reviews_to_postgis(self):
-        '''*!*! Review submissions delegate to database persistence.'''
+        '''*!*! Review submissions retain their layer identity.'''
 
         payload = {
             'id': 'one',
+            'layer_id': 'points',
             'annotation_label': 'damaged',
             'feature_version_seen': 1,
         }
-        expected = {'id': 'one', 'annotation_label': 'damaged'}
+        expected = {
+            'id': 'one',
+            'layer_id': 'points',
+            'annotation_label': 'damaged',
+        }
         store = QaqcStore('project-one', 'alice')
         with patch('app.write_reviewer_annotation', return_value=expected) as write:
-            saved = store.write_annotation(payload, 'qaqc')
+            saved = store.write_annotation(payload, 'annotation')
 
         self.assertIs(saved, expected)
         write.assert_called_once_with(
             'project-one',
             'alice',
-            'qaqc',
+            'annotation',
             payload,
         )
 

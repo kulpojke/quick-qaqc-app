@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.api.auth import authenticated_reviewer
+from src.api.feature_store import FeatureStoreError, _point_coordinates
 from src.api.main import geojson_feature
 from src.api.migrate import migration_checksum
 from src.api.models import AnnotationSubmission, FeaturePatch
@@ -21,14 +22,34 @@ class ApiModelTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             FeaturePatch(expected_version=1)
 
-    def test_feature_patch_restricts_geometry_type(self):
-        '''*!*! Building edits accept polygonal GeoJSON only.'''
+    def test_feature_patch_accepts_point_geometry(self):
+        '''*!*! Point movement can submit a point geometry update.'''
+
+        patch = FeaturePatch(
+            expected_version=1,
+            geometry={'type': 'Point', 'coordinates': [0, 0]},
+        )
+
+        self.assertEqual(patch.geometry['type'], 'Point')
+
+    def test_feature_patch_rejects_unsupported_geometry_type(self):
+        '''*!*! Feature edits reject geometry types outside configured layers.'''
 
         with self.assertRaises(ValidationError):
             FeaturePatch(
                 expected_version=1,
-                geometry={'type': 'Point', 'coordinates': [0, 0]},
+                geometry={'type': 'LineString', 'coordinates': [[0, 0], [1, 1]]},
             )
+
+    def test_browser_point_coordinates_require_valid_wgs84(self):
+        '''*!*! Browser point placement accepts finite EPSG:4326 coordinates.'''
+
+        self.assertEqual(
+            _point_coordinates({'type': 'Point', 'coordinates': [-121, 39]}),
+            (-121.0, 39.0),
+        )
+        with self.assertRaises(FeatureStoreError):
+            _point_coordinates({'type': 'Point', 'coordinates': [-181, 39]})
 
     def test_annotation_submission_normalizes_defaults(self):
         '''*!*! Annotation requests carry a feature version and optional notes.'''
@@ -46,6 +67,7 @@ class ApiModelTests(unittest.TestCase):
 
         row = {
             'id': 'building-one',
+            'layer_id': 'buildings',
             'geometry': {'type': 'Polygon', 'coordinates': []},
             'properties': {'h3_r8': '8828308281fffff'},
             'version': 4,
@@ -56,6 +78,7 @@ class ApiModelTests(unittest.TestCase):
         feature = geojson_feature(row)
 
         self.assertEqual(feature['version'], 4)
+        self.assertEqual(feature['layer_id'], 'buildings')
         self.assertNotIn('version', feature['properties'])
 
 

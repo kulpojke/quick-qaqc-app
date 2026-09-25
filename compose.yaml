@@ -121,7 +121,7 @@ services:
       - /bin/sh
       - -c
       - |
-        printf '\nQA/QC app: http://localhost:${APP_PORT:-8501}\nAPI docs: http://localhost:${API_PORT:-8000}/docs\n\n'
+        printf '\nReview app: http://localhost:${APP_PORT:-8501}\nAPI docs: http://localhost:${API_PORT:-8000}/docs\n\n'
     depends_on:
       api:
         condition: service_healthy

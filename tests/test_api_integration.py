@@ -35,9 +35,35 @@ class ApiIntegrationTests(unittest.TestCase):
             )
             cls.connection.execute(
                 '''
-INSERT INTO features (project_id, id, geometry, properties)
+INSERT INTO feature_layers (
+    project_id,
+    id,
+    name,
+    source_crs,
+    geometry_types,
+    feature_id_field,
+    h3_prefix,
+    editing
+)
 VALUES (
     %s,
+    'buildings',
+    'Buildings',
+    'EPSG:4326',
+    ARRAY['Polygon', 'MultiPolygon'],
+    'id',
+    'h3_r',
+    '{"move": true, "reshape": true}'::jsonb
+)
+''',
+                [cls.project_id],
+            )
+            cls.connection.execute(
+                '''
+INSERT INTO features (project_id, layer_id, id, geometry, properties)
+VALUES (
+    %s,
+    'buildings',
     %s,
     ST_GeomFromText('POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))', 4326),
     jsonb_build_object('source', 'test')
@@ -47,10 +73,10 @@ VALUES (
             )
             cls.connection.execute(
                 '''
-INSERT INTO tasks (id, project_id, name, mode, labels)
+INSERT INTO tasks (id, project_id, layer_id, name, mode, labels)
 VALUES
-    (%s, %s, 'Annotations', 'annotation', ARRAY['damaged', 'undamaged']),
-    (%s, %s, 'Edits', 'editing', ARRAY[]::text[])
+    (%s, %s, 'buildings', 'Annotations', 'annotation', ARRAY['damaged', 'undamaged']),
+    (%s, %s, 'buildings', 'Edits', 'editing', ARRAY[]::text[])
 ''',
                 [
                     cls.annotation_task,

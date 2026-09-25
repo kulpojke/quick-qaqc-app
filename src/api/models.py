@@ -22,8 +22,13 @@ class FeaturePatch(BaseModel):
             raise ValueError('geometry or properties is required')
         if self.geometry is not None:
             geometry_type = self.geometry.get('type')
-            if geometry_type not in {'Polygon', 'MultiPolygon'}:
-                raise ValueError('geometry must be a Polygon or MultiPolygon')
+            if geometry_type not in {
+                'Point',
+                'MultiPoint',
+                'Polygon',
+                'MultiPolygon',
+            }:
+                raise ValueError('geometry must be a supported point or polygon type')
         return self
 
 

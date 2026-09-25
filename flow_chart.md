@@ -1,17 +1,18 @@
 # Application Flow
 
-The application is YAML-configured and PostGIS-backed. GeoParquet initializes
-the database; reviewer clients never edit the object-storage file directly.
+The application is YAML-configured and PostGIS-backed. Independent point and
+polygon GeoParquet layers initialize the database; reviewer clients never edit
+object-storage files directly.
 
 ## Runtime Flow
 
 ```mermaid
 flowchart TD
-    yaml["Project YAML<br/>project, imagery, modes, user, H3 TODO"]
-    parquet["GeoParquet<br/>EPSG:4326 buildings and H3 fields"]
+    yaml["Project YAML<br/>layers, columns, CRS, modes, user, H3 TODO"]
+    parquet["GeoParquet layers<br/>points and polygons"]
     migrations["src/api/migrate.py<br/>apply numbered migrations"]
-    bootstrap["src/api/bootstrap.py<br/>transactional project import"]
-    postgis[("PostGIS<br/>features, tasks, assignments,<br/>annotations and history")]
+    bootstrap["src/api/bootstrap.py<br/>reproject, COG filter, H3, import"]
+    postgis[("PostGIS<br/>layers, features, tasks, assignments,<br/>annotations and history")]
     app["app.py<br/>configured UI and COG tile server"]
     featureStore["src/api/feature_store.py<br/>assigned feature reads"]
     reviewStore["src/api/review_store.py<br/>review reads and writes"]
@@ -50,7 +51,7 @@ sequenceDiagram
     participant DB as PostGIS
 
     Reviewer->>Browser: Select feature, label, and notes
-    Browser->>App: POST id, label, notes, feature_version_seen, mode
+    Browser->>App: POST layer_id, id, label, notes, feature_version_seen, mode
     App->>Store: write_reviewer_annotation(...)
     Store->>DB: Resolve active task and verify H3 assignment
     Store->>DB: Lock and compare feature version
@@ -61,10 +62,9 @@ sequenceDiagram
     Browser->>Browser: Update completion and advance
 ```
 
-Annotation and QA/QC modes use different task IDs, so their records remain
-independent. The database unique key also includes reviewer identity, allowing
-multiple reviewers to annotate the same feature without overwriting each
-other.
+Annotation tasks are layer-specific. The database unique key also includes
+reviewer identity, allowing multiple reviewers to annotate the same feature
+without overwriting each other.
 
 ## COG Tile Sequence
 

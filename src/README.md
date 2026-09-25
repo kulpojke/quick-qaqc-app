@@ -40,6 +40,8 @@ existing GeoJSON --> geojson2parquet.py --> GeoParquet
                                                    v
                                             api/bootstrap.py
                                                    |
+                                      reproject + COG filter + H3
+                                                   |
                                                    v
                                                 PostGIS
 ```
@@ -49,13 +51,13 @@ through `api/feature_store.py` and reviews through `api/review_store.py`.
 
 ## Data Responsibilities
 
-- Source GeoJSON and GeoParquet use EPSG:4326 polygon or multipolygon
-  geometries.
-- H3 source fields use the configured prefix followed by a resolution, such as
-  `h3_r8`.
+- YAML layers can independently source point or polygon GeoParquet in a
+  declared CRS.
+- Bootstrap reprojects to EPSG:4326, filters every layer to the COG bounds,
+  and generates H3 rows; source files do not need H3 columns.
 - GeoParquet is immutable initialization or export data.
 - PostGIS is the mutable shared source of truth.
-- Annotation and QA/QC records are read from and written to PostGIS.
+- Annotation records and geometry edits are read from and written to PostGIS.
 
 See [`api/README.md`](api/README.md) for the database lifecycle and service
 relationships.

@@ -6,8 +6,10 @@
   <title>Map Feature Annotator</title>
   <!-- *!*! Leaflet and H3 stay CDN-hosted until the container build vendors browser dependencies. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.18.3/dist/leaflet-geoman.css">
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/h3-js@4.2.1/dist/h3-js.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@geoman-io/leaflet-geoman-free@2.18.3/dist/leaflet-geoman.js"></script>
   <!-- *!*! Application styling is served directly by the Python HTTP server. -->
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -29,16 +31,17 @@
       <div class="stat"><span class="muted">Open</span><strong id="open-count">0</strong></div>
     </section>
 
+    <!-- *!*! Layer controls govern map visibility and choose one editable point layer. -->
+    <section class="layer-panel" aria-labelledby="layer-heading">
+      <h2 id="layer-heading">Layers</h2>
+      <div id="layer-list" class="layer-list"></div>
+    </section>
+
     <section class="form">
       <label>
         Annotator
         <input id="reviewer" autocomplete="name" placeholder="annotator name">
       </label>
-
-      <div class="selected" id="workflow-mode-section">
-        <h2>Task</h2>
-        <div class="label-buttons" id="workflow-mode-buttons"></div>
-      </div>
 
       <div class="selected">
         <h2>Selected H3 Cell</h2>
@@ -58,12 +61,12 @@
         <button id="toggle-feature-outline" type="button" disabled>Show Outline</button>
       </div>
 
-      <div class="selected">
+      <div class="selected" id="annotation-label-section">
         <h2 id="label-heading">Annotation Label</h2>
         <div class="label-buttons" id="correct-label-buttons"></div>
       </div>
 
-      <label>
+      <label id="annotation-notes-section">
         Notes
         <textarea id="qa-notes" placeholder="optional"></textarea>
       </label>

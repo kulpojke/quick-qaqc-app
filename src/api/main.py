@@ -45,6 +45,7 @@ def geojson_feature(row: dict[str, Any]) -> dict[str, Any]:
     return {
         'type': 'Feature',
         'id': row['id'],
+        'layer_id': row['layer_id'],
         'geometry': row['geometry'],
         'properties': row['properties'],
         'version': row['version'],
@@ -56,6 +57,7 @@ def geojson_feature(row: dict[str, Any]) -> dict[str, Any]:
 def select_feature(
     connection: Connection,
     project_id: str,
+    layer_id: str,
     feature_id: str,
 ) -> dict[str, Any] | None:
     '''*!*! Read one feature with GeoJSON geometry from PostGIS.'''
@@ -63,6 +65,7 @@ def select_feature(
     return connection.execute(
         '''
 SELECT
+    layer_id,
     id,
     ST_AsGeoJSON(geometry)::jsonb AS geometry,
     properties,
@@ -70,10 +73,67 @@ SELECT
     updated_by,
     updated_at
 FROM features
-WHERE project_id = %s AND id = %s
+WHERE project_id = %s
+  AND layer_id = %s
+  AND id = %s
+  AND deleted_at IS NULL
 ''',
-        [project_id, feature_id],
+        [project_id, layer_id, feature_id],
     ).fetchone()
+
+
+def refresh_feature_h3(
+    connection: Connection,
+    project_id: str,
+    layer_id: str,
+    feature_id: str,
+) -> None:
+    '''*!*! Recalculate normalized H3 cells after a geometry change.'''
+
+    import h3
+
+    row = connection.execute(
+        '''
+SELECT
+    ST_Y(ST_PointOnSurface(geometry)) AS latitude,
+    ST_X(ST_PointOnSurface(geometry)) AS longitude
+FROM features
+WHERE project_id = %s AND layer_id = %s AND id = %s
+''',
+        [project_id, layer_id, feature_id],
+    ).fetchone()
+    resolutions = connection.execute(
+        '''
+SELECT resolution
+FROM feature_h3
+WHERE project_id = %s AND layer_id = %s AND feature_id = %s
+ORDER BY resolution
+''',
+        [project_id, layer_id, feature_id],
+    ).fetchall()
+    updates = [
+        [
+            h3.latlng_to_cell(row['latitude'], row['longitude'], resolution['resolution']),
+            project_id,
+            layer_id,
+            feature_id,
+            resolution['resolution'],
+        ]
+        for resolution in resolutions
+    ]
+    if updates:
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                '''
+UPDATE feature_h3
+SET h3_index = %s
+WHERE project_id = %s
+  AND layer_id = %s
+  AND feature_id = %s
+  AND resolution = %s
+''',
+                updates,
+            )
 
 
 def assigned_task_feature(
@@ -91,17 +151,25 @@ def assigned_task_feature(
         f'''
 SELECT
     task.project_id,
+    task.layer_id,
     task.mode,
     task.labels,
+    layer.geometry_types,
+    layer.editing,
     feature.version AS feature_version
 FROM task_reviewers AS reviewer
 JOIN tasks AS task ON task.id = reviewer.task_id
+JOIN feature_layers AS layer
+  ON layer.project_id = task.project_id
+ AND layer.id = task.layer_id
 JOIN features AS feature
   ON feature.project_id = task.project_id
+ AND feature.layer_id = task.layer_id
  AND feature.id = %(feature_id)s
 WHERE reviewer.task_id = %(task_id)s
   AND reviewer.reviewer_id = %(reviewer_id)s
   AND task.active
+  AND feature.deleted_at IS NULL
   AND (
       reviewer.all_features
       OR EXISTS (
@@ -109,6 +177,7 @@ WHERE reviewer.task_id = %(task_id)s
           FROM task_h3_assignments AS assignment
           JOIN feature_h3 AS feature_cell
             ON feature_cell.project_id = feature.project_id
+           AND feature_cell.layer_id = feature.layer_id
            AND feature_cell.feature_id = feature.id
            AND feature_cell.resolution = assignment.resolution
            AND feature_cell.h3_index = assignment.h3_index
@@ -153,7 +222,12 @@ def get_feature(
     )
     if assignment is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'Assigned feature not found')
-    row = select_feature(connection, assignment['project_id'], feature_id)
+    row = select_feature(
+        connection,
+        assignment['project_id'],
+        assignment['layer_id'],
+        feature_id,
+    )
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'Feature not found')
     return geojson_feature(row)
@@ -184,9 +258,31 @@ def patch_feature(
             'Task does not permit feature editing',
         )
     project_id = assignment['project_id']
+    layer_id = assignment['layer_id']
     geometry = Jsonb(patch.geometry) if patch.geometry is not None else None
     properties = Jsonb(patch.properties) if patch.properties is not None else None
     if geometry is not None:
+        if patch.geometry['type'] not in assignment['geometry_types']:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                'Geometry type is not allowed for this layer',
+            )
+        geometry_type = patch.geometry['type']
+        editing = assignment['editing']
+        if geometry_type in {'Point', 'MultiPoint'} and not editing.get('move'):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                'Point movement is disabled for this layer',
+            )
+        if (
+            geometry_type in {'Polygon', 'MultiPolygon'}
+            and not editing.get('move')
+            and not editing.get('reshape')
+        ):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                'Polygon geometry editing is disabled for this layer',
+            )
         valid = connection.execute(
             '''
 SELECT ST_IsValid(requested) AND NOT ST_IsEmpty(requested) AS valid
@@ -215,9 +311,11 @@ SET
     updated_by = %(reviewer_id)s,
     updated_at = now()
 WHERE project_id = %(project_id)s
+  AND layer_id = %(layer_id)s
   AND id = %(feature_id)s
   AND version = %(expected_version)s
 RETURNING
+    layer_id,
     id,
     ST_AsGeoJSON(geometry)::jsonb AS geometry,
     properties,
@@ -230,12 +328,13 @@ RETURNING
             'properties': properties,
             'reviewer_id': reviewer_id,
             'project_id': project_id,
+            'layer_id': layer_id,
             'feature_id': feature_id,
             'expected_version': patch.expected_version,
         },
     ).fetchone()
     if row is None:
-        current = select_feature(connection, project_id, feature_id)
+        current = select_feature(connection, project_id, layer_id, feature_id)
         if current is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, 'Feature not found')
         raise HTTPException(
@@ -245,6 +344,8 @@ RETURNING
                 'current': geojson_feature(current),
             },
         )
+    if geometry is not None:
+        refresh_feature_h3(connection, project_id, layer_id, feature_id)
     connection.execute(
         '''
 UPDATE projects
@@ -269,6 +370,7 @@ def assigned_features(
     rows = connection.execute(
         '''
 SELECT
+    feature.layer_id,
     feature.id,
     ST_AsGeoJSON(feature.geometry)::jsonb AS geometry,
     feature.properties,
@@ -280,14 +382,18 @@ SELECT
     annotation.version AS annotation_version
 FROM task_reviewers AS reviewer
 JOIN tasks AS task ON task.id = reviewer.task_id
-JOIN features AS feature ON feature.project_id = task.project_id
+JOIN features AS feature
+  ON feature.project_id = task.project_id
+ AND feature.layer_id = task.layer_id
 LEFT JOIN annotations AS annotation
     ON annotation.task_id = task.id
+   AND annotation.layer_id = feature.layer_id
    AND annotation.feature_id = feature.id
    AND annotation.reviewer_id = reviewer.reviewer_id
 WHERE reviewer.task_id = %(task_id)s
   AND reviewer.reviewer_id = %(reviewer_id)s
   AND task.active
+  AND feature.deleted_at IS NULL
   AND (%(after)s IS NULL OR feature.id > %(after)s)
   AND (
       reviewer.all_features
@@ -296,6 +402,7 @@ WHERE reviewer.task_id = %(task_id)s
           FROM task_h3_assignments AS assignment
           JOIN feature_h3 AS feature_cell
             ON feature_cell.project_id = feature.project_id
+           AND feature_cell.layer_id = feature.layer_id
            AND feature_cell.feature_id = feature.id
            AND feature_cell.resolution = assignment.resolution
            AND feature_cell.h3_index = assignment.h3_index
@@ -372,6 +479,7 @@ def submit_annotation(
 INSERT INTO annotations (
     task_id,
     project_id,
+    layer_id,
     feature_id,
     reviewer_id,
     label,
@@ -380,13 +488,14 @@ INSERT INTO annotations (
 ) VALUES (
     %(task_id)s,
     %(project_id)s,
+    %(layer_id)s,
     %(feature_id)s,
     %(reviewer_id)s,
     %(label)s,
     %(notes)s,
     %(feature_version_seen)s
 )
-ON CONFLICT (task_id, feature_id, reviewer_id) DO UPDATE
+ON CONFLICT (task_id, layer_id, feature_id, reviewer_id) DO UPDATE
 SET
     label = EXCLUDED.label,
     notes = EXCLUDED.notes,
@@ -401,6 +510,7 @@ RETURNING id, label, notes, feature_version_seen, version, created_at, updated_a
         {
             'task_id': task_id,
             'project_id': assignment['project_id'],
+            'layer_id': assignment['layer_id'],
             'feature_id': feature_id,
             'reviewer_id': reviewer_id,
             'label': submission.label,
@@ -414,9 +524,12 @@ RETURNING id, label, notes, feature_version_seen, version, created_at, updated_a
             '''
 SELECT id, label, notes, feature_version_seen, version, created_at, updated_at
 FROM annotations
-WHERE task_id = %s AND feature_id = %s AND reviewer_id = %s
+WHERE task_id = %s
+  AND layer_id = %s
+  AND feature_id = %s
+  AND reviewer_id = %s
 ''',
-            [task_id, feature_id, reviewer_id],
+            [task_id, assignment['layer_id'], feature_id, reviewer_id],
         ).fetchone()
     if changed:
         connection.execute(
@@ -430,6 +543,7 @@ WHERE id = %s
     return {
         'id': str(annotation['id']),
         'feature_id': feature_id,
+        'layer_id': assignment['layer_id'],
         'reviewer_id': reviewer_id,
         'label': annotation['label'],
         'notes': annotation['notes'],

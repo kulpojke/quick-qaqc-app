@@ -1,6 +1,6 @@
 # Shared API
 
-This package provides the PostGIS-backed portion of the annotation and QA/QC
+This package provides the PostGIS-backed portion of the annotation and editing
 system. It owns database setup, initial project loading, assigned feature
 reads, and concurrent API updates.
 
@@ -11,8 +11,8 @@ reads, and concurrent API updates.
 | `__init__.py` | Marks and describes the shared API package |
 | `database.py` | Reads `DATABASE_URL`, creates the Psycopg connection pool, and provides request-scoped connections |
 | `migrate.py` | Applies numbered SQL files from `../../migrations/` once and verifies their checksums |
-| `bootstrap.py` | Imports configured GeoParquet into PostGIS once, normalizes H3 rows, and synchronizes YAML-managed tasks and reviewer assignments |
-| `feature_store.py` | Returns the PostGIS features assigned to a project reviewer as a GeoJSON feature collection |
+| `bootstrap.py` | Reprojects and COG-filters configured GeoParquet layers, generates H3 rows, and synchronizes layer tasks and reviewer assignments |
+| `feature_store.py` | Returns compact assigned features and applies browser point/polygon edits with optimistic version checking |
 | `review_store.py` | Reads and writes reviewer annotations with task, assignment, and feature-version checks |
 | `auth.py` | Derives development reviewer identity from `X-Reviewer-ID` and fails closed for unimplemented production authentication |
 | `models.py` | Defines and validates annotation and feature-edit request bodies |
@@ -29,14 +29,15 @@ PostGIS health check
 migrate.py
   001_initial.sql
   002_feature_imports.sql
+  003_feature_layers.sql
         |
         v
 bootstrap.py <---- project_config.py <---- camp_config.yaml
         |
-        +---- DuckDB reads local or remote GeoParquet
-        +---- features and feature_h3
-        +---- tasks, task_reviewers, task_h3_assignments
-        +---- feature_imports ledger
+        +---- DuckDB reads each local or remote GeoParquet layer
+        +---- CRS transform and COG-intersection filter
+        +---- layer-aware features and generated feature_h3
+        +---- per-layer tasks and feature_imports ledger
         |
         +------------------+
         v                  v
@@ -44,13 +45,13 @@ bootstrap.py <---- project_config.py <---- camp_config.yaml
 ```
 
 The import and its ledger row are committed in one transaction. Later starts
-with the same source synchronize task assignments but do not replace feature
-rows. A changed source or an inconsistent feature count stops startup so
-database edits cannot be silently overwritten.
+with the same sources and COG bounds synchronize task assignments but do not
+replace feature rows. A changed source, bounds, or inconsistent feature count
+stops startup so database edits cannot be silently overwritten.
 
 ## Read And Write Paths
 
-`app.py` calls `feature_store.read_project_features()` and the read/write
+`app.py` calls `feature_store.read_project_features()` and point-edit helper, plus the read/write
 functions in `review_store.py`. These queries apply the active task and
 reviewer assignments stored in PostGIS.
 
@@ -70,8 +71,9 @@ request
 ```
 
 Feature edits use optimistic version checks. An annotation is unique by task,
-feature, and reviewer, so several reviewers can independently annotate the
-same feature. Geometry/property editing is not yet connected to the browser.
+layer, feature, and reviewer, so several reviewers can independently annotate
+the same feature. The browser exposes point placement plus polygon movement and
+vertex editing; property editing remains a backend foundation.
 
 ## Commands
 

@@ -41,7 +41,7 @@ body {
   box-shadow: var(--shadow);
   box-sizing: border-box;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
   gap: 14px;
   overflow: auto;
   padding: 18px;
@@ -90,6 +90,79 @@ h2 {
 .stat strong {
   display: block;
   font-size: 1rem;
+}
+
+/* *!*! Layer rows keep visibility and edit state scannable without obscuring the map. */
+.layer-panel {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
+.layer-list {
+  display: grid;
+  gap: 4px;
+}
+
+.layer-row {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  display: grid;
+  gap: 7px;
+  padding: 7px 0 9px;
+}
+
+.layer-row:last-child {
+  border-bottom: 0;
+}
+
+.layer-heading-row {
+  align-items: center;
+  display: grid;
+  font-size: 0.78rem;
+  gap: 8px;
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.layer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-actions {
+  display: flex;
+  gap: 6px;
+  padding-left: 26px;
+}
+
+.layer-actions button {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.72rem;
+  padding: 6px 8px;
+  width: auto;
+}
+
+.layer-actions button.active {
+  background: #17212b;
+  border-color: #17212b;
+  color: #fff;
+}
+
+.layer-row input[type="checkbox"] {
+  accent-color: #17212b;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  width: 16px;
+}
+
+/* *!*! A crosshair is the only transient cue while the next map click places a point. */
+body.point-placement #map,
+body.point-placement #map * {
+  cursor: crosshair;
 }
 
 .form {
@@ -249,5 +322,9 @@ button:disabled {
     left: 0;
     top: auto;
     width: 100%;
+  }
+
+  .legend {
+    bottom: calc(44vh + 12px);
   }
 }

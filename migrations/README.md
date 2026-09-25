@@ -15,7 +15,8 @@ afterward.
 | Table | Purpose |
 | --- | --- |
 | `projects` | Top-level projects and their current database revision |
-| `features` | Current building geometries and properties |
+| `feature_layers` | Independent point or polygon sources, column roles, and editing capabilities |
+| `features` | Current layer-aware point or polygon geometries and properties |
 | `feature_h3` | H3 cells associated with each feature and resolution |
 | `tasks` | Annotation, QA/QC, or editing work units |
 | `task_reviewers` | Reviewers assigned to tasks |
@@ -23,17 +24,18 @@ afterward.
 | `annotations` | Each reviewer's current annotation for a feature |
 | `annotation_history` | Previous versions of changed annotations |
 | `feature_history` | Previous versions of edited features |
-| `export_state` | Most recent project revision exported to GeoParquet |
-| `feature_imports` | Immutable GeoParquet source used to initialize a project |
+| `export_state` | Most recent project revision exported for each layer |
+| `feature_imports` | Immutable GeoParquet source and COG bounds used for each layer |
 
 The principal relationships are:
 
 ```text
 projects
-  +-- features
+  +-- feature_layers
+  |     +-- features
   |     +-- feature_h3
   |     +-- annotations
-  +-- tasks
+  +----- tasks
         +-- task_reviewers
         |     +-- task_h3_assignments
         +-- annotations
@@ -58,22 +60,36 @@ application behavior, not a database trigger. Export workers can compare this
 revision with `export_state.exported_revision` to determine whether a new
 GeoParquet snapshot is needed.
 
+## Feature Layers
+
+[`feature_layers`](003_feature_layers.sql) separates independently sourced
+datasets within one project. It records source CRS, accepted geometry types,
+semantic column roles, H3 prefix, and permitted editing operations. Tasks,
+features, imports, annotations, histories, and exports retain this layer
+identity.
+
+Bootstrap filters every layer by intersection with the imagery COG bounds.
+Future exports should write one versioned GeoParquet per layer from this
+relevant PostGIS subset, rather than copying the full original source such as
+a statewide point dataset.
+
 ## Features
 
-[`features`](001_initial.sql#L11-L23) stores the current version of each
-building.
+[`features`](001_initial.sql#L11-L23), extended by
+[`003_feature_layers.sql`](003_feature_layers.sql), stores each layer's current
+point or polygon features.
 
-- `(project_id, id)` is the composite primary key, allowing different projects
-  to use the same source feature identifier.
+- `(project_id, layer_id, id)` is the composite primary key, allowing layers
+  and projects to reuse source feature identifiers safely.
 - `geometry` uses EPSG:4326.
-- Geometry must be valid, nonempty, and either Polygon or MultiPolygon.
+- Geometry must be valid, nonempty, and Point, MultiPoint, Polygon, or
+  MultiPolygon. Each layer further declares its accepted geometry types.
 - `properties` holds flexible source attributes as JSONB.
 - `version` supports optimistic concurrency checks.
 - `updated_by` identifies the reviewer responsible for the latest edit.
 
-The geometry column is declared as `geometry(Geometry, 4326)` so it can hold
-both Polygon and MultiPolygon values. Check constraints restrict it to those
-two building geometry types.
+All database geometries use EPSG:4326. Bootstrap transforms each source from
+its configured CRS before filtering and insertion.
 
 The GiST index at [`features_geometry_gix`](001_initial.sql#L25) supports fast
 spatial intersection and bounding-box queries.
@@ -91,12 +107,12 @@ overwriting newer work.
 [`feature_h3`](001_initial.sql#L27-L38) normalizes H3 membership rather than
 adding columns such as `h3_r8` directly to `features`.
 
-One feature can have one H3 index at each resolution:
+One layer feature can have one H3 index at each resolution:
 
 ```text
-project_id | feature_id | resolution | h3_index
-camp       | 123        | 8          | 8828308281fffff
-camp       | 123        | 9          | 8928308280fffff
+project_id | layer_id | feature_id | resolution | h3_index
+camp       | points   | 123        | 8          | 8828308281fffff
+camp       | points   | 123        | 9          | 8928308280fffff
 ```
 
 The lookup index supports queries that find all project features assigned to a
@@ -104,7 +120,8 @@ set of H3 cells.
 
 ## Tasks And Reviewer Assignments
 
-[`tasks`](001_initial.sql#L40-L50) defines work units. A task has one mode:
+[`tasks`](001_initial.sql#L40-L50) defines layer-specific work units. A task
+has one database mode:
 
 - `annotation`
 - `qaqc`
@@ -112,6 +129,10 @@ set of H3 cells.
 
 Tasks also store their permitted labels, active status, and intended blind
 review policy.
+
+`qaqc` remains accepted by the original database constraint for historical
+projects, but current YAML validation does not create QA/QC tasks. The browser
+uses only `annotation` and `editing` tasks.
 
 [`task_reviewers`](001_initial.sql#L52-L58) assigns users to tasks.
 `all_features = true` grants the reviewer the entire task. Otherwise,
@@ -127,12 +148,12 @@ same H3 cell can be assigned to multiple reviewers independently.
 unique constraint covers:
 
 ```text
-task_id + feature_id + reviewer_id
+task_id + layer_id + feature_id + reviewer_id
 ```
 
 Alice and Bob can therefore annotate the same feature without overwriting one
-another. Annotation and QA/QC records can also coexist because they belong to
-different tasks.
+another. Historical QA/QC records may coexist because they belong to different
+tasks, although the current workflow no longer creates those tasks.
 
 - `label` and `notes` contain the current review.
 - `feature_version_seen` records which geometry version the reviewer observed.
@@ -169,7 +190,7 @@ erase its recorded history.
 
 ## Export State
 
-[`export_state`](001_initial.sql#L127-L132) records:
+[`export_state`](001_initial.sql#L127-L132) records per layer:
 
 - the most recently exported project revision;
 - the versioned object-storage key; and
@@ -193,10 +214,11 @@ those cascades.
 
 ## Initial Feature Import
 
-[`002_feature_imports.sql`](002_feature_imports.sql) records the source and
-feature count from the successful initial GeoParquet import. The bootstrap
-service uses this row to make startup idempotent: the same source is reused,
-while a different source is rejected instead of replacing database edits.
+[`002_feature_imports.sql`](002_feature_imports.sql), extended by migration 003,
+records each layer source, retained feature count, and COG bounds. Bootstrap
+uses these rows to make startup idempotent: unchanged filtered sources are
+reused, while changed sources or bounds are rejected instead of replacing
+database edits.
 
 The import record is written in the same transaction as the project features
 and normalized H3 rows. A failed or interrupted import therefore leaves no

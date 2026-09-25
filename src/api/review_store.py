@@ -1,8 +1,9 @@
-'''*!*! Persist browser annotation and QA/QC records in PostGIS.'''
+'''*!*! Persist browser annotation records in PostGIS.'''
 
 from __future__ import annotations
 
 from http import HTTPStatus
+import json
 from typing import Any
 
 import psycopg
@@ -21,13 +22,20 @@ class ReviewStoreError(RuntimeError):
         self.status = status
 
 
+def annotation_key(layer_id: str, feature_id: str) -> str:
+    '''*!*! Return the stable browser key for one layer feature.'''
+
+    return json.dumps([layer_id, feature_id], separators=(',', ':'))
+
+
 def reviewer_task(
     connection,
     project_id: str,
     reviewer_id: str,
     mode: str,
+    layer_id: str,
 ) -> dict[str, Any]:
-    '''*!*! Return the one active task assigned for a project, reviewer, and mode.'''
+    '''*!*! Return the active task assigned for one layer and workflow mode.'''
 
     rows = connection.execute(
         '''
@@ -35,32 +43,35 @@ SELECT task.id, task.labels
 FROM tasks AS task
 JOIN task_reviewers AS reviewer ON reviewer.task_id = task.id
 WHERE task.project_id = %s
+  AND task.layer_id = %s
   AND task.mode = %s
   AND task.active
   AND reviewer.reviewer_id = %s
 ORDER BY task.created_at, task.id
 LIMIT 2
 ''',
-        [project_id, mode, reviewer_id],
+        [project_id, layer_id, mode, reviewer_id],
     ).fetchall()
     if not rows:
         raise ReviewStoreError(
-            f'No active {mode} task is assigned to {reviewer_id}',
+            f'No active {mode} task for layer {layer_id!r} is assigned to {reviewer_id}',
             HTTPStatus.FORBIDDEN,
         )
     if len(rows) > 1:
         raise ReviewStoreError(
-            f'Multiple active {mode} tasks are assigned to {reviewer_id}',
+            f'Multiple active {mode} tasks for layer {layer_id!r} are assigned '
+            f'to {reviewer_id}',
             HTTPStatus.CONFLICT,
         )
     return rows[0]
 
 
 def browser_annotation(row: dict[str, Any]) -> dict[str, Any]:
-    '''*!*! Convert one database annotation to the browser's review shape.'''
+    '''*!*! Convert one database annotation to the browser review shape.'''
 
     return {
         'id': row['feature_id'],
+        'layer_id': row['layer_id'],
         'annotation_label': row['label'],
         'qa_status': 'annotated',
         'qa_correct_class': row['label'],
@@ -77,14 +88,31 @@ def read_reviewer_annotations(
     reviewer_id: str,
     mode: str,
 ) -> dict[str, dict[str, Any]]:
-    '''*!*! Read one reviewer's current database records for a workflow mode.'''
+    '''*!*! Read one reviewer's records across layers for a workflow mode.'''
 
     with psycopg.connect(database_url(), row_factory=dict_row) as connection:
-        task = reviewer_task(connection, project_id, reviewer_id, mode)
+        task_rows = connection.execute(
+            '''
+SELECT task.id
+FROM tasks AS task
+JOIN task_reviewers AS reviewer ON reviewer.task_id = task.id
+WHERE task.project_id = %s
+  AND task.mode = %s
+  AND task.active
+  AND reviewer.reviewer_id = %s
+''',
+            [project_id, mode, reviewer_id],
+        ).fetchall()
+        if not task_rows:
+            raise ReviewStoreError(
+                f'No active {mode} tasks are assigned to {reviewer_id}',
+                HTTPStatus.FORBIDDEN,
+            )
         rows = connection.execute(
             '''
 SELECT
     feature_id,
+    layer_id,
     reviewer_id,
     label,
     notes,
@@ -92,13 +120,13 @@ SELECT
     version,
     updated_at
 FROM annotations
-WHERE task_id = %s AND reviewer_id = %s
-ORDER BY feature_id
+WHERE task_id = ANY(%s) AND reviewer_id = %s
+ORDER BY layer_id, feature_id
 ''',
-            [task['id'], reviewer_id],
+            [[row['id'] for row in task_rows], reviewer_id],
         ).fetchall()
     return {
-        row['feature_id']: browser_annotation(row)
+        annotation_key(row['layer_id'], row['feature_id']): browser_annotation(row)
         for row in rows
     }
 
@@ -109,9 +137,10 @@ def write_reviewer_annotation(
     mode: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    '''*!*! Create or update one assigned database review record.'''
+    '''*!*! Create or update one assigned layer-specific review record.'''
 
     feature_id = str(payload.get('id', '')).strip()
+    layer_id = str(payload.get('layer_id', '')).strip()
     label = str(
         payload.get('annotation_label')
         or payload.get('qa_correct_class')
@@ -121,6 +150,8 @@ def write_reviewer_annotation(
     feature_version_seen = payload.get('feature_version_seen')
     if not feature_id:
         raise ReviewStoreError('Missing feature id', HTTPStatus.BAD_REQUEST)
+    if not layer_id:
+        raise ReviewStoreError('Missing layer id', HTTPStatus.BAD_REQUEST)
     if not label:
         raise ReviewStoreError('Missing annotation label', HTTPStatus.BAD_REQUEST)
     if len(label) > 100:
@@ -134,7 +165,7 @@ def write_reviewer_annotation(
         )
 
     with psycopg.connect(database_url(), row_factory=dict_row) as connection:
-        task = reviewer_task(connection, project_id, reviewer_id, mode)
+        task = reviewer_task(connection, project_id, reviewer_id, mode, layer_id)
         if label not in task['labels']:
             raise ReviewStoreError('Invalid annotation label', HTTPStatus.BAD_REQUEST)
         assignment = connection.execute(
@@ -144,9 +175,11 @@ FROM task_reviewers AS reviewer
 JOIN tasks AS task ON task.id = reviewer.task_id
 JOIN features AS feature
   ON feature.project_id = task.project_id
+ AND feature.layer_id = task.layer_id
  AND feature.id = %(feature_id)s
 WHERE reviewer.task_id = %(task_id)s
   AND reviewer.reviewer_id = %(reviewer_id)s
+  AND feature.deleted_at IS NULL
   AND task.active
   AND (
       reviewer.all_features
@@ -155,6 +188,7 @@ WHERE reviewer.task_id = %(task_id)s
           FROM task_h3_assignments AS assigned
           JOIN feature_h3 AS feature_cell
             ON feature_cell.project_id = feature.project_id
+           AND feature_cell.layer_id = feature.layer_id
            AND feature_cell.feature_id = feature.id
            AND feature_cell.resolution = assigned.resolution
            AND feature_cell.h3_index = assigned.h3_index
@@ -186,13 +220,14 @@ FOR SHARE OF feature
 INSERT INTO annotations (
     task_id,
     project_id,
+    layer_id,
     feature_id,
     reviewer_id,
     label,
     notes,
     feature_version_seen
-) VALUES (%s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (task_id, feature_id, reviewer_id) DO UPDATE SET
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (task_id, layer_id, feature_id, reviewer_id) DO UPDATE SET
     label = EXCLUDED.label,
     notes = EXCLUDED.notes,
     feature_version_seen = EXCLUDED.feature_version_seen,
@@ -203,6 +238,7 @@ WHERE annotations.label IS DISTINCT FROM EXCLUDED.label
    OR annotations.feature_version_seen IS DISTINCT FROM EXCLUDED.feature_version_seen
 RETURNING
     feature_id,
+    layer_id,
     reviewer_id,
     label,
     notes,
@@ -213,6 +249,7 @@ RETURNING
             [
                 task['id'],
                 project_id,
+                layer_id,
                 feature_id,
                 reviewer_id,
                 label,
@@ -225,6 +262,7 @@ RETURNING
                 '''
 SELECT
     feature_id,
+    layer_id,
     reviewer_id,
     label,
     notes,
@@ -232,9 +270,12 @@ SELECT
     version,
     updated_at
 FROM annotations
-WHERE task_id = %s AND feature_id = %s AND reviewer_id = %s
+WHERE task_id = %s
+  AND layer_id = %s
+  AND feature_id = %s
+  AND reviewer_id = %s
 ''',
-                [task['id'], feature_id, reviewer_id],
+                [task['id'], layer_id, feature_id, reviewer_id],
             ).fetchone()
         else:
             connection.execute(

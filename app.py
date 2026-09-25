@@ -12,16 +12,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from src.api.feature_store import read_project_features
+from src.api.feature_store import (
+    FeatureStoreError,
+    read_project_features,
+    update_project_geometry,
+)
 from src.api.review_store import (
     ReviewStoreError,
+    annotation_key,
     read_reviewer_annotations,
     write_reviewer_annotation,
 )
 from src.project_config import ConfigError, ReviewConfig, load_review_config
 
 
-DEFAULT_FEATURE_ID_FIELD = 'id'
 TILE_SIZE = 256
 
 # *!*! Frontend files remain external assets for direct serving in the container.
@@ -115,13 +119,11 @@ class QaqcStore:
         self,
         database_project_id: str,
         database_reviewer_id: str,
-        feature_id_field: str = DEFAULT_FEATURE_ID_FIELD,
     ):
         '''*!*! Configure the PostGIS project and reviewer identity.'''
 
         self.database_project_id = database_project_id
         self.database_reviewer_id = database_reviewer_id
-        self.feature_id_field = feature_id_field
 
     def read_buildings(self) -> dict:
         '''*!*! Load this reviewer's assigned features from PostGIS.'''
@@ -129,7 +131,6 @@ class QaqcStore:
         return read_project_features(
             self.database_project_id,
             self.database_reviewer_id,
-            feature_id_field=self.feature_id_field,
         )
 
     def read_annotations(self, mode: str) -> dict[str, dict[str, object]]:
@@ -148,7 +149,7 @@ class QaqcStore:
         annotation: dict[str, object],
         mode: str,
     ) -> dict[str, object]:
-        '''*!*! Persist one annotation or QA/QC record in PostGIS.'''
+        '''*!*! Persist one annotation record in PostGIS.'''
 
         if not self.database_project_id or not self.database_reviewer_id:
             raise RuntimeError('Database project and reviewer are required')
@@ -159,6 +160,18 @@ class QaqcStore:
             annotation,
         )
 
+    def update_geometry(self, edit: dict[str, object]) -> dict[str, object]:
+        '''*!*! Persist one assigned point or polygon geometry edit.'''
+
+        return update_project_geometry(
+            self.database_project_id,
+            self.database_reviewer_id,
+            str(edit['layer_id']),
+            str(edit['id']),
+            int(edit['expected_version']),
+            edit['geometry'],
+        )
+
 
 def make_handler(
     store: QaqcStore,
@@ -167,10 +180,10 @@ def make_handler(
     '''*!*! Build an HTTP handler bound to one database-backed project.'''
 
     configured_buildings = store.read_buildings()
-    assigned_feature_ids = {
-        str(feature.get('properties', {}).get(review_config.feature_id_field))
+    assigned_feature_keys = {
+        annotation_key(str(feature.get('layer_id', '')), str(feature.get('id', '')))
         for feature in configured_buildings.get('features', [])
-        if feature.get('properties', {}).get(review_config.feature_id_field) is not None
+        if feature.get('layer_id') is not None and feature.get('id') is not None
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -184,16 +197,28 @@ def make_handler(
             '''*!*! Return browser runtime values without templating static files.'''
 
             return {
-                'defaultLabelField': review_config.predicted_class_field,
                 'defaultAnnotationLabels': ','.join(review_config.annotation_labels),
                 'defaultCogPath': review_config.imagery_cog,
-                'defaultConfidenceField': review_config.confidence_field,
                 'configuredProjectName': review_config.project_name,
-                'configuredFeatureIdField': review_config.feature_id_field,
-                'configuredH3Prefix': review_config.h3_prefix,
                 'configuredUser': review_config.user,
                 'workflowModes': list(review_config.modes),
                 'todoH3Indexes': list(review_config.todo_h3_indexes),
+                'layers': [
+                    {
+                        'id': layer.id,
+                        'name': layer.name,
+                        'geometryTypes': list(layer.geometry_types),
+                        'modes': list(layer.modes),
+                        'fields': {
+                            'featureId': layer.feature_id_field,
+                            'predictedClass': layer.predicted_class_field,
+                            'confidence': layer.confidence_field,
+                            'display': list(layer.display_fields),
+                        },
+                        'editing': vars(layer.editing),
+                    }
+                    for layer in review_config.layers
+                ],
             }
 
         def requested_cog_source(self) -> CogSource | None:
@@ -204,7 +229,7 @@ def make_handler(
 
             query = parse_qs(urlparse(self.path).query)
             mode = query.get('mode', ['annotation'])[0].strip().lower()
-            if mode not in {'annotation', 'qaqc'} or mode not in review_config.modes:
+            if mode != 'annotation' or mode not in review_config.modes:
                 return None
             return mode
 
@@ -346,7 +371,15 @@ def make_handler(
                 self.send_text("Missing feature id", HTTPStatus.BAD_REQUEST)
                 return
 
-            if str(payload['id']) not in assigned_feature_ids:
+            if not payload.get('layer_id'):
+                self.send_text('Missing layer id', HTTPStatus.BAD_REQUEST)
+                return
+
+            feature_key = annotation_key(
+                str(payload['layer_id']),
+                str(payload['id']),
+            )
+            if feature_key not in assigned_feature_keys:
                 self.send_text('Feature is not assigned to this user', HTTPStatus.FORBIDDEN)
                 return
 
@@ -356,6 +389,31 @@ def make_handler(
             try:
                 self.send_json(store.write_annotation(payload, mode))
             except ReviewStoreError as error:
+                self.send_text(str(error), error.status)
+
+        def do_PATCH(self) -> None:
+            '''*!*! Accept same-origin point and polygon edits from the browser map.'''
+
+            path = urlparse(self.path).path
+            if path != '/api/features':
+                self.send_text('Not found', HTTPStatus.NOT_FOUND)
+                return
+
+            content_length = int(self.headers.get('Content-Length', '0'))
+            try:
+                payload = json.loads(self.rfile.read(content_length) or b'{}')
+            except json.JSONDecodeError:
+                self.send_text('Invalid JSON', HTTPStatus.BAD_REQUEST)
+                return
+            required = {'id', 'layer_id', 'expected_version', 'geometry'}
+            if not required.issubset(payload):
+                self.send_text('Incomplete feature edit', HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self.send_json(store.update_geometry(payload))
+            except (TypeError, ValueError):
+                self.send_text('Invalid feature version', HTTPStatus.BAD_REQUEST)
+            except FeatureStoreError as error:
                 self.send_text(str(error), error.status)
 
         def log_message(self, format: str, *args: object) -> None:
@@ -404,15 +462,14 @@ def main() -> None:
 
     if not os.environ.get('DATABASE_URL'):
         raise SystemExit('DATABASE_URL is required')
-    if not {'annotation', 'qaqc'}.intersection(review_config.modes):
+    if 'annotation' not in review_config.modes:
         raise SystemExit(
-            'Editing-only projects are not supported yet; include annotation or qaqc mode'
+            'Editing-only projects are not supported yet; include annotation mode'
         )
 
     store = QaqcStore(
         review_config.project_id,
         review_config.user,
-        review_config.feature_id_field,
     )
     try:
         handler = make_handler(store, review_config)
@@ -426,7 +483,8 @@ def main() -> None:
     print(f'Project: {review_config.project_name}')
     print(f'User: {review_config.user}')
     print(f'Modes: {modes_text}')
-    print(f'Assigned H3 cells: {len(review_config.todo_h3_indexes):,}')
+    print(f'Layers: {len(review_config.layers):,}')
+    print(f'Assigned H3 cells per layer: {len(review_config.todo_h3_indexes):,}')
     print(f'Features and reviews: PostGIS project {review_config.project_id}')
     server.serve_forever()
 

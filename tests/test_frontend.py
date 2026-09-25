@@ -33,6 +33,14 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn('__DEFAULT_', html + javascript)
         self.assertNotIn('settings-panel', html)
         self.assertNotIn('localStorage', javascript)
+        self.assertIn('pointToLayer', javascript)
+        self.assertIn('layer_id: selectedFeature.layer_id', javascript)
+        self.assertIn('id="layer-list"', html)
+        self.assertIn('function renderLayerPanel()', javascript)
+        self.assertIn("fetch('/api/features'", javascript)
+        self.assertIn('function indexFeatures()', javascript)
+        self.assertIn('leaflet-geoman', html)
+        self.assertNotIn('workflow-mode-buttons', html)
 
     def test_handler_serves_frontend_assets_and_runtime_config(self):
         '''*!*! Handler routes expose static assets plus JSON runtime configuration.'''
@@ -42,16 +50,30 @@ class FrontendTests(unittest.TestCase):
             return_value={'type': 'FeatureCollection', 'features': []},
         )
         config = SimpleNamespace(
-            predicted_class_field='predicted_class',
             annotation_labels=('damaged', 'undamaged'),
             imagery_cog='',
-            confidence_field='',
             project_name='Test project',
-            feature_id_field='id',
-            h3_prefix='h3_r',
             user='alice',
             modes=('annotation',),
             todo_h3_indexes=(),
+            layers=(
+                SimpleNamespace(
+                    id='buildings',
+                    name='Buildings',
+                    geometry_types=('Polygon',),
+                    modes=('annotation',),
+                    feature_id_field='id',
+                    predicted_class_field='predicted_class',
+                    confidence_field='',
+                    display_fields=(),
+                    editing=SimpleNamespace(
+                        move=False,
+                        reshape=False,
+                        create=False,
+                        delete=False,
+                    ),
+                ),
+            ),
         )
         handler_class = make_handler(store, config)
         handler = handler_class.__new__(handler_class)
@@ -78,6 +100,54 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn('defaultBuildingsPath', config)
         self.assertEqual(config['configuredProjectName'], 'Test project')
         self.assertEqual(config['workflowModes'], ['annotation'])
+        self.assertEqual(config['layers'][0]['id'], 'buildings')
+
+    def test_handler_accepts_point_move_requests(self):
+        '''*!*! Browser point moves are delegated to the database feature store.'''
+
+        store = QaqcStore('project-one', 'alice')
+        store.read_buildings = Mock(
+            return_value={'type': 'FeatureCollection', 'features': []},
+        )
+        store.update_geometry = Mock(return_value={
+            'type': 'Feature',
+            'id': 'point-one',
+            'layer_id': 'points',
+            'geometry': {'type': 'Point', 'coordinates': [-121.0, 39.0]},
+            'properties': {},
+            'version': 2,
+            'h3': {},
+        })
+        config = SimpleNamespace(
+            annotation_labels=('damaged',),
+            imagery_cog='',
+            project_name='Test project',
+            user='alice',
+            modes=('annotation', 'editing'),
+            todo_h3_indexes=(),
+            layers=(),
+        )
+        handler_class = make_handler(store, config)
+        handler = handler_class.__new__(handler_class)
+        payload = json.dumps({
+            'id': 'point-one',
+            'layer_id': 'points',
+            'expected_version': 1,
+            'geometry': {'type': 'Point', 'coordinates': [-121.0, 39.0]},
+        }).encode('utf-8')
+        handler.path = '/api/features'
+        handler.headers = {'Content-Length': str(len(payload))}
+        handler.rfile = BytesIO(payload)
+        handler.wfile = BytesIO()
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+
+        handler.do_PATCH()
+
+        store.update_geometry.assert_called_once()
+        response = json.loads(handler.wfile.getvalue())
+        self.assertEqual(response['version'], 2)
 
 
 if __name__ == '__main__':
