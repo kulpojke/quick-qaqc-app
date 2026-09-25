@@ -13,6 +13,7 @@ reads, and concurrent API updates.
 | `migrate.py` | Applies numbered SQL files from `../../migrations/` once and verifies their checksums |
 | `bootstrap.py` | Imports configured GeoParquet into PostGIS once, normalizes H3 rows, and synchronizes YAML-managed tasks and reviewer assignments |
 | `feature_store.py` | Returns the PostGIS features assigned to a project reviewer as a GeoJSON feature collection |
+| `review_store.py` | Reads and writes reviewer annotations with task, assignment, and feature-version checks |
 | `auth.py` | Derives development reviewer identity from `X-Reviewer-ID` and fails closed for unimplemented production authentication |
 | `models.py` | Defines and validates annotation and feature-edit request bodies |
 | `main.py` | Creates the FastAPI application and implements health, feature, annotation, and editing endpoints |
@@ -49,9 +50,9 @@ database edits cannot be silently overwritten.
 
 ## Read And Write Paths
 
-`app.py` currently calls `feature_store.read_project_features()` on the
-server side and sends the resulting GeoJSON to the browser. That query applies
-the active task and reviewer H3 assignments stored in PostGIS.
+`app.py` calls `feature_store.read_project_features()` and the read/write
+functions in `review_store.py`. These queries apply the active task and
+reviewer assignments stored in PostGIS.
 
 The shared FastAPI endpoints in `main.py` provide the future collaborative
 write path:
@@ -70,8 +71,7 @@ request
 
 Feature edits use optimistic version checks. An annotation is unique by task,
 feature, and reviewer, so several reviewers can independently annotate the
-same feature. The current browser workflow still writes annotations to CSV;
-moving those writes to these endpoints is a separate integration step.
+same feature. Geometry/property editing is not yet connected to the browser.
 
 ## Commands
 

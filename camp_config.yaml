@@ -18,15 +18,6 @@ paths:
   # A local COG path or an HTTP(S) URL.
   imagery_cog: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/waldoair-campfire/waldoair_campfire.tif
 
-  # Existing merged work is optional and remains read-only.
-  annotations_input: data/qaqc/annotations_merged.csv
-  qaqc_input: data/qaqc/qaqc_merged.csv
-
-  # {user} is replaced with workflow.user.
-  annotations_output: data/qaqc/annotations_{user}.csv
-  qaqc_output: data/qaqc/qaqc_{user}.csv
-  edited_features_output: data/edits/buildings_{user}.geojson
-
 fields:
   feature_id: id
   predicted_class: predicted_class

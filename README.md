@@ -2,15 +2,15 @@
 
 ## Data requirements
 
-The application requires three inputs:
+The application requires:
 
-1. a GeoJSON (in EPSG:4326) that  has:
+1. GeoParquet in EPSG:4326 containing:
     + polygon or multipolygon geometries
     + an id field
     + H3 columns h3_r5 through h3_r10
 
 
-2. An annotation label list entered in the app, or an optional label field in the GeoJSON whose unique values can populate the annotation buttons.
+2. Annotation labels in the project YAML.
 
 3. A COG of imagery for the annotator to use as comparison.
 
@@ -19,10 +19,6 @@ The application requires three inputs:
 Chances are you do not have H3 indexes  attached to your polygons.  You can use `src/add_h3_indexes.py` to attach them.
 
 For building a COG of imagery , `src/build_cog.py` has been provided
-
-The file `src/merge_qaqc_annotations.py` combines per-annotator CSVs into one wide CSV keyed by feature id, preserving each annotator’s latest annotation label, notes, and timestamp in annotator-specific columns.
-
-
 
 ## Usage
 
@@ -45,10 +41,10 @@ If needed, build a COG from a directory of TIFF imagery:
 python src/build_cog.py path/to/imagery_dir
 ```
 
-Run the app:
+Run the app against a migrated and bootstrapped database:
 
 ```bash
-python app.py
+python app.py --yaml project.yaml
 ```
 
 The browser frontend is kept in `frontend/index.html`, `frontend/styles.css`,
@@ -83,12 +79,12 @@ migrations. The `bootstrap` service then imports the configured GeoParquet
 into PostGIS once, normalizes its H3 columns, and synchronizes configured tasks
 and reviewer assignments before either server starts.
 
-In Compose, the UI reads reviewer-assigned features from PostGIS. It still
-writes review CSVs beneath `data/`; moving those writes to the shared API is
-the next database integration phase.
+The UI reads reviewer-assigned features and review records from PostGIS.
+Annotation and QA/QC submissions are written directly to the `annotations`
+table and preserve independent records for each reviewer.
 
 Database bootstrap requires `paths.features` to point to local or HTTP(S)
-GeoParquet. File-based app runs outside Compose continue to support GeoJSON.
+GeoParquet.
 
 During development, API requests require an `X-Reviewer-ID` header. This mode
 is intentionally disabled when `AUTH_MODE` is anything other than
@@ -114,14 +110,13 @@ For an assigned project, pass its YAML file to the app:
 python app.py --yaml project.yaml
 ```
 
-Relative paths in the YAML are resolved from the YAML file's directory, and
-`{user}` in output paths is replaced with `workflow.user`. In YAML mode the
-in-app Settings panel is hidden, the technician name is locked, and only
-features inside the H3 cells listed under `workflow.todo` are loaded into the
-work queue. An empty TODO list makes every feature available.
+Relative paths in the YAML are resolved from the YAML file's directory. YAML
+is required; the former no-YAML Settings mode has been removed. The technician
+name is fixed by `workflow.user`, and only features inside the H3 cells listed
+under `workflow.todo` are loaded into the work queue. An empty TODO list makes
+every feature available.
 
-YAML projects can fetch pre-fire Overture building footprints from the Fused
-Source Cooperative mirror when they start:
+A project configuration supplies only server-controlled runtime values:
 
 ```yaml
 project:
@@ -130,38 +125,28 @@ project:
   fire_date: '2025-06-28T11:12:56Z'
 
 paths:
-  features: None
+  features: 'https://example.com/buildings.parquet'
   imagery_cog: 'https://example.com/post-fire-imagery.tif'
 
-overture:
-  refresh: false
+fields:
+  feature_id: 'id'
+  h3_prefix: 'h3_r'
+
+annotation:
+  labels: ['damaged', 'undamaged', 'unknown']
+
+workflow:
+  user: 'alice'
+  modes: ['annotation', 'qaqc']
+  todo: []
 ```
 
-Set `paths.features` to `None` to select the newest Fused Overture release
-whose release date is before `project.fire_date`. Set it to `oldest` to
-explicitly use the oldest mirrored release, including when no release predates
-the fire. Any other value is treated as an existing feature source and
-disables the Fused fetch. This may be a local path or a public/signed HTTP(S)
-URL to a GeoJSON or GeoParquet object in S3, R2, or another object store.
+The configured database bootstrap source must be a local or public/signed
+HTTP(S) GeoParquet object. DuckDB reads that source once to populate PostGIS.
 
-Remote GeoJSON is fetched by the Python server once during startup. Remote
-GeoParquet is queried through DuckDB using HTTP range requests, with configured
-H3 assignments included in the query. Selected features are converted to
-GeoJSON and retained in memory; they are not progressively streamed
-feature-by-feature to the browser.
-
-For automatic fetching, the app derives an EPSG:4326 bounding box from the COG.
-It queries only Parquet row groups that overlap that box, clips the resulting
-building geometries to it, adds the configured H3 columns, and writes the
-GeoJSON directly under `data/` beside the project YAML.
-
-The GeoJSON and its `.overture.json` sidecar are a startup cache. A matching
-cache is reused without listing releases or querying building data. Set
-`overture.refresh: true` for one deliberate rebuild, then return it to
-`false`. The Fused mirror currently has no release before February 2024, so
-older fire dates cannot use this source for genuinely pre-fire footprints.
-
-The same fetch can be run separately:
+The standalone fetch utility can retrieve Overture footprints using COG bounds
+and a fire date. Its GeoJSON output must be converted to GeoParquet before
+database bootstrap:
 
 ```bash
 python src/fetch_overture_buildings.py \
@@ -170,13 +155,13 @@ python src/fetch_overture_buildings.py \
   --output data/features/buildings.geojson
 ```
 
-`annotation` and `qaqc` can be enabled together and use independent input and
-output CSVs. Existing input files are treated as read-only; the current user's
-work is written only to the configured `{user}` output. The `editing` mode and
-output path are accepted by the configuration format, but geometry editing is
-not implemented yet, so an editing-only project cannot be started.
+`annotation` and `qaqc` can be enabled together and use independent database
+tasks. The `editing` mode is represented in the database and API, but geometry
+editing is not exposed in the browser yet, so an editing-only project cannot
+be started.
 
-Open `http://127.0.0.1:8501` in a web browser, set the feature GeoJSON, annotation labels, optional local COG path or COG URL, and annotator name. The label field is optional; when supplied, its unique values are used as annotation button options. If class probability is available, you can select that field from the GeoJSON and filter features by model confidence.
+Open `http://127.0.0.1:8501` in a web browser. Project, imagery, labels,
+reviewer, modes, and assignments come from the YAML configuration.
 
 The imagery should appear as well as hexagonal grid cells. Grid cells only appear where features are present. The grid will change scale when you zoom. Zoom to the desired level and select a grid cell by clicking it. Use escape to exit a selected grid cell.
 
@@ -188,5 +173,4 @@ Hexgrid colors will change based on completion.
 
 ## Application flow
 
-The detailed flow chart is in [flow_chart.md](flow_chart.md). A rendered vector
-PDF is available at [flow_chart.pdf](flow_chart.pdf) for zooming and scrolling.
+The detailed flow chart is in [flow_chart.md](flow_chart.md).

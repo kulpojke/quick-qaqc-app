@@ -8,13 +8,13 @@ database and are skipped when `TEST_DATABASE_URL` is absent.
 
 | File | Coverage |
 | --- | --- |
-| `test_project_config.py` | YAML validation, path resolution, H3 assignment filtering, feature-source loading, and concurrent CSV persistence |
+| `test_project_config.py` | YAML validation, path resolution, and PostGIS feature/review delegation |
 | `test_fetch_overture_buildings.py` | Fused release discovery and selection, historical schema handling, COG bounds, clipping, H3 enrichment, and cache reuse |
 | `test_frontend.py` | Static frontend separation, runtime config responses, MIME types, and browser-friendly startup URLs |
 | `test_api.py` | API request-model validation, development authentication, response shaping, and migration checksums without a database |
 | `test_api_integration.py` | Independent multi-reviewer annotations, annotation history, successful feature edits, and stale-version conflicts in PostGIS |
 | `test_bootstrap.py` | Stable source identities and deterministic YAML-managed task IDs |
-| `test_bootstrap_integration.py` | Transactional GeoParquet import, normalized H3 rows, assigned feature reads, and preservation of edits across repeated startup |
+| `test_bootstrap_integration.py` | Transactional GeoParquet import, normalized H3 rows, assigned feature/review reads, database review writes, and preservation across repeated startup |
 
 ## Relationships
 

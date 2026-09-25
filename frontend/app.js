@@ -4,12 +4,10 @@ if (!configResponse.ok) {
   throw new Error(await configResponse.text());
 }
 const {
-  defaultBuildingsPath,
   defaultLabelField,
   defaultAnnotationLabels,
   defaultCogPath,
   defaultConfidenceField,
-  yamlConfigured,
   configuredProjectName,
   configuredFeatureIdField,
   configuredH3Prefix,
@@ -31,15 +29,6 @@ const h3ZoomLayers = [
 // *!*! Cache stable DOM references once; feature and H3 layers are replaced frequently.
 const reviewerInput = document.getElementById("reviewer");
 const saveButton = document.getElementById("save");
-const buildingsPathInput = document.getElementById("buildings-path");
-const labelFieldInput = document.getElementById("label-field");
-const annotationLabelsInput = document.getElementById("annotation-labels");
-const cogPathInput = document.getElementById("cog-path");
-const confidenceFieldInput = document.getElementById("confidence-field");
-const confidenceFilterInput = document.getElementById("confidence-filter");
-const confidenceFilterLabel = document.getElementById("confidence-filter-label");
-const applySettings = document.getElementById("apply-settings");
-const settingsStatus = document.getElementById("settings-status");
 const selectedCell = document.getElementById("selected-cell");
 const selectedCellResolution = document.getElementById("selected-cell-resolution");
 const selectedCellProgress = document.getElementById("selected-cell-progress");
@@ -53,7 +42,6 @@ const openCount = document.getElementById("open-count");
 const previousBuilding = document.getElementById("previous-building");
 const nextOpenBuilding = document.getElementById("next-open-building");
 const nextBuilding = document.getElementById("next-building");
-const settingsPanel = document.getElementById('settings-panel');
 const projectName = document.getElementById('project-name');
 const workflowSummary = document.getElementById('workflow-summary');
 const workflowModeSection = document.getElementById('workflow-mode-section');
@@ -75,25 +63,12 @@ let selectedFeatureLayer = null;
 let selectedOutlineVisible = false;
 let featureLayersById = {};
 let annotations = {};
-// *!*! YAML values are authoritative; local storage only supports the legacy settings mode.
-let buildingsPath = yamlConfigured
-  ? defaultBuildingsPath
-  : localStorage.getItem('qaqcBuildingsPath') || defaultBuildingsPath;
-let labelField = yamlConfigured
-  ? defaultLabelField
-  : localStorage.getItem('qaqcLabelField') || defaultLabelField;
-let annotationLabels = yamlConfigured
-  ? defaultAnnotationLabels
-  : localStorage.getItem('qaqcAnnotationLabels') || defaultAnnotationLabels;
-let cogPath = yamlConfigured
-  ? defaultCogPath
-  : localStorage.getItem('qaqcCogPath') || defaultCogPath;
-let confidenceField = yamlConfigured
-  ? defaultConfidenceField
-  : localStorage.getItem('qaqcConfidenceField') || '';
-let confidenceFilter = yamlConfigured
-  ? 0
-  : Number(localStorage.getItem('qaqcConfidenceFilter') || 0);
+// *!*! Server-provided YAML values are the only runtime configuration source.
+const labelField = defaultLabelField;
+const annotationLabels = defaultAnnotationLabels;
+const cogPath = defaultCogPath;
+const confidenceField = defaultConfidenceField;
+const confidenceFilter = 0;
 let selectedCorrectLabel = '';
 const reviewModes = workflowModes.filter((mode) => mode === 'annotation' || mode === 'qaqc');
 let activeMode = reviewModes[0] || 'annotation';
@@ -111,35 +86,10 @@ const confidenceFilters = [
   { label: "High or below", value: "high", maxRank: 3 },
 ];
 
-buildingsPathInput.value = buildingsPath;
-labelFieldInput.value = labelField;
-annotationLabelsInput.value = annotationLabels;
-cogPathInput.value = cogPath;
-confidenceFieldInput.value = confidenceField;
-confidenceFilterInput.value = confidenceFilter;
-
-function updateConfidenceFilterLabel() {
-  const filter = confidenceFilters[Number(confidenceFilterInput.value)] || confidenceFilters[0];
-  confidenceFilterLabel.textContent = filter.label;
-}
-
-updateConfidenceFilterLabel();
-confidenceFilterInput.addEventListener("input", updateConfidenceFilterLabel);
-
-if (yamlConfigured) {
-  settingsPanel.hidden = true;
-  projectName.textContent = configuredProjectName || 'Feature Annotator';
-  workflowSummary.textContent = `${workflowModes.join(' + ')} | ${todoAssignments.length || 'all'} H3 assignment${todoAssignments.length === 1 ? '' : 's'}`;
-  reviewerInput.value = configuredUser;
-  reviewerInput.readOnly = true;
-}
-else {
-  reviewerInput.value = localStorage.getItem('qaqcReviewer') || '';
-  reviewerInput.addEventListener('input', () => {
-    localStorage.setItem('qaqcReviewer', reviewerInput.value);
-    updateH3Grid();
-  });
-}
+projectName.textContent = configuredProjectName || 'Feature Annotator';
+workflowSummary.textContent = `${workflowModes.join(' + ')} | ${todoAssignments.length || 'all'} H3 assignment${todoAssignments.length === 1 ? '' : 's'}`;
+reviewerInput.value = configuredUser;
+reviewerInput.readOnly = true;
 
 // *!*! Annotation and QA/QC share map navigation but load independent review records.
 function renderWorkflowModes() {
@@ -203,17 +153,6 @@ function configuredAnnotationLabels() {
 }
 
 function labelValues() {
-  if (!yamlConfigured && buildingsData && labelField) {
-    const values = Array.from(new Set(
-      buildingsData.features
-        .map((feature) => feature.properties[labelField])
-        .filter((value) => value != null && value !== "")
-        .map((value) => String(value))
-    )).sort((left, right) => left.localeCompare(right));
-    if (values.length) {
-      return values;
-    }
-  }
   return Array.from(new Set(configuredAnnotationLabels()));
 }
 
@@ -329,10 +268,6 @@ function isReviewed(buildingId) {
   return annotationIsComplete(annotations[buildingId]);
 }
 
-function setSettingsStatus(message) {
-  settingsStatus.textContent = message || "";
-}
-
 // *!*! COG metadata establishes map bounds before Leaflet requests server-rendered tiles.
 async function updateCogLayer() {
   if (cogLayer) {
@@ -340,11 +275,9 @@ async function updateCogLayer() {
     cogLayer = null;
   }
   if (!cogPath) {
-    setSettingsStatus("No COG loaded.");
     return;
   }
 
-  setSettingsStatus("Checking COG...");
   const encodedPath = encodeURIComponent(cogPath);
   const infoResponse = await fetch(`/api/cog/info?path=${encodedPath}`);
   if (!infoResponse.ok) {
@@ -364,20 +297,7 @@ async function updateCogLayer() {
       tms: false,
     }
   ).addTo(map);
-  let reportedTileError = false;
-  cogLayer.on("tileerror", (event) => {
-    if (!reportedTileError) {
-      reportedTileError = true;
-      setSettingsStatus(`COG tile failed: ${event.tile && event.tile.src ? event.tile.src : cogPath}`);
-    }
-  });
-  cogLayer.on("load", () => {
-    if (!reportedTileError) {
-      setSettingsStatus(`COG loaded: ${info.width} x ${info.height}, ${info.crs}`);
-    }
-  });
   map.fitBounds(bounds, { padding: [24, 24] });
-  setSettingsStatus(`COG layer added: ${info.width} x ${info.height}, ${info.crs}`);
 }
 
 function h3ResolutionForZoom(zoom) {
@@ -799,7 +719,7 @@ function renderFeatureLayer(fitToFeatures) {
 }
 
 async function loadBuildings() {
-  const response = await fetch(`/api/buildings?path=${encodeURIComponent(buildingsPath)}`);
+  const response = await fetch('/api/buildings');
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -817,59 +737,6 @@ nextOpenBuilding.addEventListener("click", () => {
 
 nextBuilding.addEventListener("click", () => {
   selectBuildingAtCellPosition(selectedCellPosition + 1, true);
-});
-
-// *!*! Legacy settings persist locally and never override a YAML-configured project.
-applySettings.addEventListener("click", async () => {
-  const nextBuildingsPath = buildingsPathInput.value.trim() || defaultBuildingsPath;
-  const nextLabelField = labelFieldInput.value.trim();
-  const nextAnnotationLabels = annotationLabelsInput.value.trim();
-  const nextCogPath = cogPathInput.value.trim() || defaultCogPath;
-  const nextConfidenceField = confidenceFieldInput.value.trim();
-  const nextConfidenceFilter = Number(confidenceFilterInput.value);
-  const reloadFeatures = nextBuildingsPath !== buildingsPath;
-  const rerenderFeatures =
-    reloadFeatures ||
-    nextLabelField !== labelField ||
-    nextAnnotationLabels !== annotationLabels ||
-    nextConfidenceField !== confidenceField ||
-    nextConfidenceFilter !== confidenceFilter;
-
-  applySettings.disabled = true;
-  setSettingsStatus("Loading settings...");
-  buildingsPath = nextBuildingsPath;
-  labelField = nextLabelField;
-  annotationLabels = nextAnnotationLabels;
-  cogPath = nextCogPath;
-  confidenceField = nextConfidenceField;
-  confidenceFilter = Number.isFinite(nextConfidenceFilter) ? nextConfidenceFilter : 0;
-  localStorage.setItem("qaqcBuildingsPath", buildingsPath);
-  localStorage.setItem("qaqcLabelField", labelField);
-  localStorage.setItem("qaqcAnnotationLabels", annotationLabels);
-  localStorage.setItem("qaqcCogPath", cogPath);
-  localStorage.setItem("qaqcConfidenceField", confidenceField);
-  localStorage.setItem("qaqcConfidenceFilter", String(confidenceFilter));
-  saveButton.disabled = true;
-  try {
-    if (reloadFeatures) {
-      await loadBuildings();
-    }
-    else if (rerenderFeatures) {
-      renderFeatureLayer(false);
-    }
-  }
-  catch (error) {
-    setSettingsStatus(error.message);
-    alert(error.message);
-  }
-  try {
-    await updateCogLayer();
-  }
-  catch (error) {
-    setSettingsStatus(error.message);
-    alert(error.message);
-  }
-  applySettings.disabled = false;
 });
 
 map.on("zoomend", () => {
@@ -897,6 +764,7 @@ saveButton.addEventListener("click", async () => {
     qa_correct_class: selectedCorrectLabel,
     qa_notes: qaNotes.value,
     reviewer: reviewerInput.value,
+    feature_version_seen: selectedFeature.version,
   };
 
   const response = await fetch(`/api/annotations?mode=${encodeURIComponent(activeMode)}`, {
@@ -935,11 +803,10 @@ async function init() {
     await updateCogLayer();
   }
   catch (error) {
-    setSettingsStatus(error.message);
     alert(error.message);
   }
 }
 
 init().catch((error) => {
-  document.body.innerHTML = `<pre>${error.message}</pre>`;
+  document.body.textContent = error.message;
 });

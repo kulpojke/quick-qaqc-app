@@ -23,40 +23,6 @@
       <p class="muted" id="workflow-summary"></p>
     </section>
 
-    <!-- *!*! The settings panel is legacy fallback UI and is hidden whenever YAML config is active. -->
-    <details id="settings-panel">
-      <summary>Settings</summary>
-      <div class="settings-body">
-        <label>
-          Feature GeoJSON
-          <input id="buildings-path">
-        </label>
-        <label>
-          Label field
-          <input id="label-field" placeholder="optional source label field">
-        </label>
-        <label>
-          Annotation labels
-          <input id="annotation-labels" placeholder="comma-separated labels">
-        </label>
-        <label>
-          COG imagery
-          <input id="cog-path" placeholder="optional local path or URL">
-        </label>
-        <label>
-          Class probability field
-          <input id="confidence-field" placeholder="optional">
-        </label>
-        <label>
-          Max confidence
-          <input id="confidence-filter" type="range" min="0" max="4" step="1">
-          <span class="muted" id="confidence-filter-label">All</span>
-        </label>
-        <button id="apply-settings" type="button">Load</button>
-        <div class="settings-status" id="settings-status"></div>
-      </div>
-    </details>
-
     <section class="stats">
       <div class="stat"><span class="muted">Total</span><strong id="total-count">0</strong></div>
       <div class="stat"><span class="muted">Annotated</span><strong id="reviewed-count">0</strong></div>

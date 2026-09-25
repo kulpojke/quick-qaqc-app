@@ -1,182 +1,87 @@
 # Application Flow
 
-This document describes the local QA/QC annotation app at a system level. The
-same flow is rendered as a vector PDF in `flow_chart.pdf` for easier zooming and
-scrolling.
+The application is YAML-configured and PostGIS-backed. GeoParquet initializes
+the database; reviewer clients never edit the object-storage file directly.
 
 ## Runtime Flow
 
 ```mermaid
 flowchart TD
-    user["Annotator"]
+    yaml["Project YAML<br/>project, imagery, modes, user, H3 TODO"]
+    parquet["GeoParquet<br/>EPSG:4326 buildings and H3 fields"]
+    migrations["src/api/migrate.py<br/>apply numbered migrations"]
+    bootstrap["src/api/bootstrap.py<br/>transactional project import"]
+    postgis[("PostGIS<br/>features, tasks, assignments,<br/>annotations and history")]
+    app["app.py<br/>configured UI and COG tile server"]
+    featureStore["src/api/feature_store.py<br/>assigned feature reads"]
+    reviewStore["src/api/review_store.py<br/>review reads and writes"]
+    browser["Browser UI<br/>Leaflet and H3 navigation"]
+    cog["Local or HTTP(S) COG"]
 
-    subgraph Prep["Optional data preparation"]
-        rawGeojson["Polygon or multipolygon GeoJSON<br/>EPSG:4326, id field"]
-        addH3["src/add_h3_indexes.py<br/>adds h3_r5 through h3_r10 columns"]
-        h3Geojson["Feature GeoJSON used by app"]
-        sourceTiffs["Source GeoTIFF tiles"]
-        buildCog["src/build_cog.py<br/>gdalbuildvrt then gdal_translate -of COG"]
-        cogFile["COG imagery<br/>local path or HTTP(S) URL"]
+    migrations --> postgis
+    yaml --> bootstrap
+    parquet --> bootstrap
+    bootstrap --> postgis
 
-        rawGeojson --> addH3 --> h3Geojson
-        sourceTiffs --> buildCog --> cogFile
-    end
+    yaml --> app
+    app --> featureStore
+    app --> reviewStore
+    featureStore --> postgis
+    reviewStore --> postgis
 
-    subgraph Server["Python server: app.py"]
-        main["main()"]
-        parser["build_parser()<br/>--host, --port, --buildings, --annotations"]
-        store["QaqcStore<br/>buildings_path, annotations_path"]
-        httpServer["ThreadingHTTPServer<br/>make_handler(store)"]
+    browser -->|GET /api/buildings| app
+    browser -->|GET /api/annotations?mode=...| app
+    browser -->|POST /api/annotations?mode=...| app
+    app -->|configured features and own reviews| browser
 
-        routeRoot["GET /<br/>Handler.app_html()"]
-        routeBuildings["GET /api/buildings?path=..."]
-        routeAnnotationsGet["GET /api/annotations"]
-        routeAnnotationsPost["POST /api/annotations"]
-        routeCogInfo["GET /api/cog/info?path=..."]
-        routeCogTile["GET /api/cog/tile/z/x/y.png?path=..."]
-
-        readBuildings["QaqcStore.read_buildings()<br/>json.load(feature GeoJSON)"]
-        readAnnotations["QaqcStore.read_annotations()<br/>csv.DictReader keyed by id"]
-        writeAnnotation["QaqcStore.write_annotation()<br/>normalizes fields, sets reviewed_at,<br/>rewrites annotation CSV"]
-
-        parseCog["parse_cog_source()<br/>HTTP(S) string, local Path, or None"]
-        cogExists["cog_source_exists()<br/>remote strings pass, local paths must exist"]
-        cogInfo["cog_info()<br/>rasterio.open, transform bounds to EPSG:4326"]
-        renderTile["render_cog_tile()<br/>rio-tiler Reader.tile(x, y, z)"]
-        emptyTile["empty_png_tile()<br/>transparent 256 x 256 PNG for TileOutsideBounds"]
-    end
-
-    subgraph Files["Local files and remote assets"]
-        geojsonFile["Feature GeoJSON<br/>id, geometry, h3_r5...h3_r10,<br/>optional label/confidence fields"]
-        annotationsCsv["Annotation CSV<br/>id, predicted_class, annotation_label,<br/>qa_status, qa_correct_class, qa_notes,<br/>reviewer, reviewed_at"]
-        cogAsset["COG raster<br/>GeoTIFF tiles and overviews"]
-    end
-
-    subgraph Browser["Browser UI: Leaflet, h3-js, localStorage"]
-        loadPage["Load page from /"]
-        defaults["Default paths injected into HTML<br/>saved settings restored from localStorage"]
-        init["init()"]
-        loadAnnotations["loadAnnotations()<br/>fetch existing annotations"]
-        loadBuildings["loadBuildings()<br/>fetch feature GeoJSON"]
-        updateCogLayer["updateCogLayer()<br/>fetch COG info, create Leaflet tile layer"]
-        renderFeatures["renderFeatureLayer()<br/>filter features, build Leaflet GeoJSON layer"]
-        updateH3Grid["updateH3Grid()<br/>choose H3 resolution from zoom,<br/>aggregate completion by cell"]
-        selectCell["selectCellFeature()<br/>lock selected H3 cell,<br/>choose first open feature"]
-        selectFeature["selectFeature()<br/>show selected id, notes, label buttons,<br/>green review circle"]
-        saveClick["Save Annotation click<br/>build annotation payload"]
-        clientUpdate["Update client state<br/>restyle features, refresh H3 grid,<br/>advance to next open feature"]
-        settings["Settings Load click<br/>update paths, labels, COG, confidence filter,<br/>persist to localStorage"]
-        zoom["Map zoomend<br/>recompute H3 grid resolution"]
-        escape["Escape key<br/>clear selected H3 cell"]
-        tileLayer["Leaflet COG tile layer<br/>requests XYZ PNG tiles"]
-    end
-
-    main --> parser
-    main --> store
-    main --> httpServer
-
-    user --> loadPage
-    loadPage -->|GET /| routeRoot
-    routeRoot -->|HTML with defaults| defaults
-    defaults --> init
-
-    init --> loadAnnotations
-    loadAnnotations -->|GET /api/annotations| routeAnnotationsGet
-    routeAnnotationsGet --> readAnnotations
-    readAnnotations --> annotationsCsv
-    annotationsCsv --> readAnnotations
-    readAnnotations -->|annotations JSON| loadAnnotations
-
-    init --> loadBuildings
-    loadBuildings -->|GET /api/buildings?path=...| routeBuildings
-    routeBuildings --> readBuildings
-    readBuildings --> geojsonFile
-    geojsonFile --> readBuildings
-    readBuildings -->|FeatureCollection JSON| loadBuildings
-    loadBuildings --> renderFeatures
-    renderFeatures --> updateH3Grid
-
-    init --> updateCogLayer
-    updateCogLayer -->|GET /api/cog/info?path=...| routeCogInfo
-    routeCogInfo --> parseCog --> cogExists --> cogInfo
-    cogInfo --> cogAsset
-    cogAsset --> cogInfo
-    cogInfo -->|width, height, CRS, WGS84 bounds| updateCogLayer
-    updateCogLayer --> tileLayer
-    tileLayer -->|GET /api/cog/tile/z/x/y.png?path=...| routeCogTile
-    routeCogTile --> parseCog
-    routeCogTile --> renderTile
-    renderTile --> cogAsset
-    renderTile -->|PNG tile| tileLayer
-    renderTile -->|TileOutsideBounds| emptyTile
-    emptyTile -->|transparent PNG tile| tileLayer
-
-    updateH3Grid --> selectCell
-    renderFeatures --> selectFeature
-    selectCell --> selectFeature
-    selectFeature --> saveClick
-    saveClick -->|POST /api/annotations| routeAnnotationsPost
-    routeAnnotationsPost --> writeAnnotation
-    writeAnnotation --> readAnnotations
-    writeAnnotation --> annotationsCsv
-    writeAnnotation -->|saved row JSON| clientUpdate
-    clientUpdate --> updateH3Grid
-    clientUpdate --> selectFeature
-
-    settings --> loadBuildings
-    settings --> renderFeatures
-    settings --> updateCogLayer
-    zoom --> updateH3Grid
-    escape --> updateH3Grid
-
-    h3Geojson -->|provided as app input| geojsonFile
-    cogFile -->|provided as app input| cogAsset
+    browser -->|XYZ tile requests| app
+    app -->|range reads| cog
+    cog -->|imagery| app
 ```
 
 ## Annotation Save Sequence
 
 ```mermaid
 sequenceDiagram
-    actor Annotator
-    participant Browser as Browser UI
-    participant Server as app.py HTTP handler
-    participant Store as QaqcStore
-    participant CSV as annotations CSV
+    actor Reviewer
+    participant Browser
+    participant App as app.py
+    participant Store as review_store.py
+    participant DB as PostGIS
 
-    Annotator->>Browser: Select H3 cell
-    Browser->>Browser: Compute cell feature ids from h3_r* column
-    Browser->>Browser: Select first open feature and show review circle
-    Annotator->>Browser: Pick label, add notes, click Save
-    Browser->>Server: POST /api/annotations
-    Server->>Store: write_annotation(payload)
-    Store->>CSV: Read current annotations
-    Store->>Store: Normalize fields and set reviewed_at
-    Store->>CSV: Rewrite CSV keyed by feature id
-    Store-->>Server: Saved annotation row
-    Server-->>Browser: Saved row JSON
-    Browser->>Browser: Update local annotations object
-    Browser->>Browser: Restyle feature and H3 completion
-    Browser->>Browser: Advance to next open feature or clear cell
+    Reviewer->>Browser: Select feature, label, and notes
+    Browser->>App: POST id, label, notes, feature_version_seen, mode
+    App->>Store: write_reviewer_annotation(...)
+    Store->>DB: Resolve active task and verify H3 assignment
+    Store->>DB: Lock and compare feature version
+    Store->>DB: Upsert reviewer annotation
+    DB-->>Store: Current annotation row
+    Store-->>App: Browser-shaped review record
+    App-->>Browser: Saved review JSON
+    Browser->>Browser: Update completion and advance
 ```
+
+Annotation and QA/QC modes use different task IDs, so their records remain
+independent. The database unique key also includes reviewer identity, allowing
+multiple reviewers to annotate the same feature without overwriting each
+other.
 
 ## COG Tile Sequence
 
 ```mermaid
 sequenceDiagram
-    participant Browser as Leaflet tile layer
-    participant Server as app.py HTTP handler
-    participant RioTiler as rio-tiler Reader
+    participant Browser as Leaflet
+    participant App as app.py
+    participant RioTiler as rio-tiler
     participant COG as Local or HTTP(S) COG
 
-    Browser->>Server: GET /api/cog/tile/z/x/y.png?path=...
-    Server->>Server: parse_cog_source(path)
-    Server->>Server: validate local path or accept HTTP(S) string
-    Server->>RioTiler: Reader.tile(x, y, z, indexes)
-    RioTiler->>COG: Read needed TIFF tile or overview byte ranges
-    COG-->>RioTiler: Raster data
-    RioTiler-->>Server: PNG tile bytes
-    Server-->>Browser: image/png
-
-    RioTiler-->>Server: TileOutsideBounds
-    Server-->>Browser: Transparent 256 x 256 PNG
+    Browser->>App: GET /api/cog/tile/z/x/y.png
+    App->>RioTiler: Reader.tile(x, y, z)
+    RioTiler->>COG: Read required tile or overview ranges
+    COG-->>RioTiler: Raster bytes
+    RioTiler-->>App: Rendered PNG
+    App-->>Browser: image/png
 ```
+
+Geometry/property editing will use the existing versioned FastAPI endpoint,
+but it is not yet exposed by the browser UI.

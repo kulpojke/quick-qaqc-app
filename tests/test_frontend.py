@@ -1,8 +1,6 @@
 from io import BytesIO
 import json
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -39,55 +37,47 @@ class FrontendTests(unittest.TestCase):
     def test_handler_serves_frontend_assets_and_runtime_config(self):
         '''*!*! Handler routes expose static assets plus JSON runtime configuration.'''
 
-        with TemporaryDirectory() as temp_dir:
-            directory = Path(temp_dir)
-            buildings_path = directory / 'buildings.geojson'
-            store = QaqcStore(
-                buildings_path,
-            )
-            store.read_buildings = Mock(
-                return_value={'type': 'FeatureCollection', 'features': []},
-            )
-            config = SimpleNamespace(
-                predicted_class_field='predicted_class',
-                annotation_labels=('damaged', 'undamaged'),
-                imagery_cog='',
-                confidence_field='',
-                project_name='Test project',
-                feature_id_field='id',
-                h3_prefix='h3_r',
-                user='alice',
-                modes=('annotation',),
-                todo_h3_indexes=(),
-            )
-            handler_class = make_handler(store, config)
-            handler = handler_class.__new__(handler_class)
-            handler.send_response = Mock()
-            handler.send_header = Mock()
-            handler.end_headers = Mock()
-            handler.wfile = BytesIO()
+        store = QaqcStore('project-one', 'alice')
+        store.read_buildings = Mock(
+            return_value={'type': 'FeatureCollection', 'features': []},
+        )
+        config = SimpleNamespace(
+            predicted_class_field='predicted_class',
+            annotation_labels=('damaged', 'undamaged'),
+            imagery_cog='',
+            confidence_field='',
+            project_name='Test project',
+            feature_id_field='id',
+            h3_prefix='h3_r',
+            user='alice',
+            modes=('annotation',),
+            todo_h3_indexes=(),
+        )
+        handler_class = make_handler(store, config)
+        handler = handler_class.__new__(handler_class)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.wfile = BytesIO()
 
-            # *!*! Exercise route dispatch without requiring a sandboxed network socket.
-            handler.path = '/static/app.js'
-            handler.do_GET()
-            self.assertIn(b"fetch('/api/config')", handler.wfile.getvalue())
-            handler.send_header.assert_any_call(
-                'Content-Type',
-                'text/javascript; charset=utf-8',
-            )
-            handler.send_header.assert_any_call('Cache-Control', 'no-store')
+        # *!*! Exercise route dispatch without requiring a sandboxed network socket.
+        handler.path = '/static/app.js'
+        handler.do_GET()
+        self.assertIn(b"fetch('/api/config')", handler.wfile.getvalue())
+        handler.send_header.assert_any_call(
+            'Content-Type',
+            'text/javascript; charset=utf-8',
+        )
+        handler.send_header.assert_any_call('Cache-Control', 'no-store')
 
-            handler.wfile = BytesIO()
-            handler.path = '/api/config'
-            handler.do_GET()
-            config = json.loads(handler.wfile.getvalue())
+        handler.wfile = BytesIO()
+        handler.path = '/api/config'
+        handler.do_GET()
+        config = json.loads(handler.wfile.getvalue())
 
-            self.assertEqual(
-                config['defaultBuildingsPath'],
-                str(buildings_path),
-            )
-            self.assertEqual(config['configuredProjectName'], 'Test project')
-            self.assertEqual(config['workflowModes'], ['annotation'])
+        self.assertNotIn('defaultBuildingsPath', config)
+        self.assertEqual(config['configuredProjectName'], 'Test project')
+        self.assertEqual(config['workflowModes'], ['annotation'])
 
 
 if __name__ == '__main__':

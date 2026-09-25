@@ -13,7 +13,7 @@ and the shared API package. The browser-facing server remains in
 | `add_h3_indexes.py` | Adds H3 cell columns to polygon data and can combine or deduplicate input files |
 | `geojson2parquet.py` | Converts GeoJSON into compressed GeoParquet using DuckDB Spatial |
 | `build_cog.py` | Builds a VRT and Cloud Optimized GeoTIFF from source TIFF imagery |
-| `merge_qaqc_annotations.py` | Combines per-reviewer CSV outputs into a wide table without collapsing reviewer identities |
+| `merge_qaqc_annotations.py` | Historical conversion helper for old CSV exports; it is not used by the application |
 | `api/` | Contains PostGIS migration, bootstrap, feature access, authentication, validation, and FastAPI code |
 
 Each utility can be run directly with `python src/<file>.py --help`. The API
@@ -44,9 +44,8 @@ existing GeoJSON --> geojson2parquet.py --> GeoParquet
                                                 PostGIS
 ```
 
-`app.py` also loads `ReviewConfig`. With `DATABASE_URL` set, it reads
-reviewer-assigned features through `api/feature_store.py`; otherwise it reads
-the configured GeoJSON or GeoParquet directly.
+`app.py` also loads `ReviewConfig`. It reads reviewer-assigned features
+through `api/feature_store.py` and reviews through `api/review_store.py`.
 
 ## Data Responsibilities
 
@@ -56,8 +55,7 @@ the configured GeoJSON or GeoParquet directly.
   `h3_r8`.
 - GeoParquet is immutable initialization or export data.
 - PostGIS is the mutable shared source of truth.
-- CSV annotation files remain the current write path for the legacy UI until
-  those writes move to the shared API.
+- Annotation and QA/QC records are read from and written to PostGIS.
 
 See [`api/README.md`](api/README.md) for the database lifecycle and service
 relationships.

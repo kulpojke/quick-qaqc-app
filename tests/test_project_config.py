@@ -1,5 +1,4 @@
 from datetime import date
-from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,12 +6,12 @@ from unittest.mock import patch
 
 import yaml
 
-from app import QaqcStore, filter_buildings_for_assignments
+from app import QaqcStore
 from src.project_config import ConfigError, load_review_config
 
 
 class ReviewConfigTests(unittest.TestCase):
-    '''*!*! Tests for project YAML parsing and assignment filtering.'''
+    '''*!*! Tests for YAML-only project configuration.'''
 
     def write_config(self, directory: Path, values: dict) -> Path:
         '''*!*! Write one temporary YAML configuration for a test.'''
@@ -28,7 +27,7 @@ class ReviewConfigTests(unittest.TestCase):
             'version': 1,
             'project': {'name': 'test-review'},
             'paths': {
-                'features': 'features.geojson',
+                'features': 'features.parquet',
                 'imagery_cog': 'imagery/image.tif',
             },
             'fields': {'feature_id': 'building_id', 'h3_prefix': 'cell_'},
@@ -40,14 +39,14 @@ class ReviewConfigTests(unittest.TestCase):
             },
         }
 
-    def test_resolves_paths_and_user_template_from_yaml_directory(self):
-        '''*!*! Paths resolve from the YAML directory and expand user.'''
+    def test_resolves_paths_from_yaml_directory(self):
+        '''*!*! Feature and imagery paths resolve from the YAML directory.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
             config = load_review_config(self.write_config(directory, self.base_config()))
 
-            self.assertEqual(config.features_path, directory / 'features.geojson')
+            self.assertEqual(config.features_path, directory / 'features.parquet')
             self.assertEqual(config.project_id, 'test-review')
             self.assertEqual(config.imagery_cog, str(directory / 'imagery/image.tif'))
             self.assertEqual(config.feature_id_field, 'building_id')
@@ -73,7 +72,7 @@ class ReviewConfigTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['paths']['features'] = 'https://example.com/buildings_h3.geojson'
+            values['paths']['features'] = 'https://example.com/buildings.parquet'
 
             config = load_review_config(
                 self.write_config(Path(temp_dir), values)
@@ -81,7 +80,7 @@ class ReviewConfigTests(unittest.TestCase):
 
             self.assertEqual(
                 config.features_path,
-                'https://example.com/buildings_h3.geojson',
+                'https://example.com/buildings.parquet',
             )
             self.assertIsNone(config.overture)
 
@@ -107,7 +106,7 @@ class ReviewConfigTests(unittest.TestCase):
             )
 
     def test_overture_requires_fire_date_and_cog(self):
-        '''*!*! Overture startup retrieval requires its date and COG source.'''
+        '''*!*! Overture retrieval configuration requires its date and COG.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
@@ -158,87 +157,17 @@ class ReviewConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, 'not a valid H3 index'):
                 load_review_config(path)
 
-    def test_filters_features_to_assigned_cells(self):
-        '''*!*! Feature filtering retains only configured H3 assignments.'''
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = load_review_config(
-                self.write_config(Path(temp_dir), self.base_config())
-            )
-            buildings = {
-                'type': 'FeatureCollection',
-                'features': [
-                    {'properties': {'cell_8': '8828308281fffff'}},
-                    {'properties': {'cell_8': '8828308283fffff'}},
-                ],
-            }
-
-            filtered = filter_buildings_for_assignments(buildings, config)
-
-            self.assertEqual(len(filtered['features']), 1)
-            self.assertEqual(len(buildings['features']), 2)
-
 
 class QaqcStoreTests(unittest.TestCase):
-    '''*!*! Tests for project feature loading and database delegation.'''
+    '''*!*! Tests for database feature and review delegation.'''
 
-    def write_geoparquet(self, path: Path) -> None:
-        '''*!*! Write two small GeoParquet features for source-loading tests.'''
-
-        import duckdb
-
-        connection = duckdb.connect()
-        try:
-            connection.execute('LOAD spatial')
-            connection.execute(
-                '''
-CREATE TABLE test_features AS
-SELECT *
-FROM (
-    VALUES
-        ('one', '8828308281fffff', ST_GeomFromText('POINT (0 0)')),
-        ('two', '8828308283fffff', ST_GeomFromText('POINT (1 1)'))
-) AS features(id, h3_r8, geometry)
-'''
-            )
-            connection.execute(
-                'COPY test_features TO ? (FORMAT PARQUET)',
-                [str(path)],
-            )
-        finally:
-            connection.close()
-
-    def test_reads_remote_feature_geojson(self):
-        '''*!*! A public bucket URL is loaded as the feature collection.'''
-
-        payload = b'{"type":"FeatureCollection","features":[]}'
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source = 'https://example.com/buildings_h3.geojson'
-            store = QaqcStore(source)
-            with patch('app.urlopen', return_value=BytesIO(payload)) as open_url:
-                buildings = store.read_buildings()
-
-        self.assertEqual(buildings['type'], 'FeatureCollection')
-        request = open_url.call_args.args[0]
-        self.assertEqual(request.full_url, source)
-        self.assertEqual(request.get_header('User-agent'), 'damagemap-qaqc/1.0')
-
-    def test_reads_configured_project_features_from_postgis(self):
-        '''*!*! YAML mode uses PostGIS when a database URL is configured.'''
+    def test_reads_features_from_postgis(self):
+        '''*!*! Feature state delegates to the configured PostGIS project.'''
 
         expected = {'type': 'FeatureCollection', 'features': []}
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = QaqcStore(
-                Path(temp_dir) / 'features.parquet',
-                database_project_id='project-one',
-                database_reviewer_id='alice',
-                feature_id_field='building_id',
-            )
-            with (
-                patch.dict('os.environ', {'DATABASE_URL': 'postgresql://test'}),
-                patch('app.read_project_features', return_value=expected) as read,
-            ):
-                buildings = store.read_buildings()
+        store = QaqcStore('project-one', 'alice', 'building_id')
+        with patch('app.read_project_features', return_value=expected) as read:
+            buildings = store.read_buildings()
 
         self.assertIs(buildings, expected)
         read.assert_called_once_with(
@@ -251,11 +180,7 @@ FROM (
         '''*!*! Review state delegates to the configured PostGIS project.'''
 
         expected = {'one': {'annotation_label': 'damaged'}}
-        store = QaqcStore(
-            Path('features.parquet'),
-            database_project_id='project-one',
-            database_reviewer_id='alice',
-        )
+        store = QaqcStore('project-one', 'alice')
         with patch('app.read_reviewer_annotations', return_value=expected) as read:
             annotations = store.read_annotations('annotation')
 
@@ -271,11 +196,7 @@ FROM (
             'feature_version_seen': 1,
         }
         expected = {'id': 'one', 'annotation_label': 'damaged'}
-        store = QaqcStore(
-            Path('features.parquet'),
-            database_project_id='project-one',
-            database_reviewer_id='alice',
-        )
+        store = QaqcStore('project-one', 'alice')
         with patch('app.write_reviewer_annotation', return_value=expected) as write:
             saved = store.write_annotation(payload, 'qaqc')
 
@@ -287,42 +208,6 @@ FROM (
             payload,
         )
 
-    def test_reads_and_filters_local_geoparquet(self):
-        '''*!*! GeoParquet queries return GeoJSON for assigned H3 cells only.'''
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            directory = Path(temp_dir)
-            source = directory / 'buildings.parquet'
-            self.write_geoparquet(source)
-            store = QaqcStore(source)
-
-            buildings = store.read_buildings(
-                h3_assignments={'h3_r8': {'8828308281fffff'}},
-            )
-
-        self.assertEqual(buildings['type'], 'FeatureCollection')
-        self.assertEqual(len(buildings['features']), 1)
-        self.assertEqual(buildings['features'][0]['properties']['id'], 'one')
-        self.assertEqual(buildings['features'][0]['geometry']['type'], 'Point')
-        self.assertNotIn('geometry', buildings['features'][0]['properties'])
-
-    def test_routes_remote_parquet_urls_to_duckdb(self):
-        '''*!*! Bucket Parquet URLs use the range-query feature reader.'''
-
-        source = 'https://example.com/buildings.parquet?signature=test'
-        assignments = {'h3_r8': {'8828308281fffff'}}
-        expected = {'type': 'FeatureCollection', 'features': []}
-        store = QaqcStore(source)
-
-        with patch.object(
-            store,
-            '_read_parquet_buildings',
-            return_value=expected,
-        ) as read_parquet:
-            buildings = store.read_buildings(h3_assignments=assignments)
-
-        self.assertIs(buildings, expected)
-        read_parquet.assert_called_once_with(source, assignments)
 
 if __name__ == '__main__':
     unittest.main()
