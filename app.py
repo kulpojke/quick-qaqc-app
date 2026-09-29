@@ -14,12 +14,13 @@ from urllib.parse import parse_qs, urlparse
 
 from src.api.feature_store import (
     FeatureStoreError,
+    create_project_polygon,
+    delete_project_polygon,
     read_project_features,
     update_project_geometry,
 )
 from src.api.review_store import (
     ReviewStoreError,
-    annotation_key,
     read_reviewer_annotations,
     write_reviewer_annotation,
 )
@@ -170,6 +171,29 @@ class QaqcStore:
             str(edit['id']),
             int(edit['expected_version']),
             edit['geometry'],
+            str(edit.get('operation', '')),
+        )
+
+    def create_polygon(self, edit: dict[str, object]) -> dict[str, object]:
+        '''*!*! Persist one newly drawn polygon with a generated feature ID.'''
+
+        return create_project_polygon(
+            self.database_project_id,
+            self.database_reviewer_id,
+            str(edit['layer_id']),
+            edit['geometry'],
+            edit.get('properties'),
+        )
+
+    def delete_polygon(self, edit: dict[str, object]) -> dict[str, object]:
+        '''*!*! Soft-delete one assigned polygon.'''
+
+        return delete_project_polygon(
+            self.database_project_id,
+            self.database_reviewer_id,
+            str(edit['layer_id']),
+            str(edit['id']),
+            int(edit['expected_version']),
         )
 
 
@@ -179,13 +203,8 @@ def make_handler(
 ):
     '''*!*! Build an HTTP handler bound to one database-backed project.'''
 
-    configured_buildings = store.read_buildings()
-    assigned_feature_keys = {
-        annotation_key(str(feature.get('layer_id', '')), str(feature.get('id', '')))
-        for feature in configured_buildings.get('features', [])
-        if feature.get('layer_id') is not None and feature.get('id') is not None
-    }
-
+    # *!*! Fail startup early when the configured project cannot be read.
+    store.read_buildings()
     class Handler(BaseHTTPRequestHandler):
         def handle_one_request(self) -> None:
             try:
@@ -308,7 +327,10 @@ def make_handler(
                 return
 
             if path == "/api/buildings":
-                self.send_json(configured_buildings)
+                try:
+                    self.send_json(store.read_buildings())
+                except FeatureStoreError as error:
+                    self.send_text(str(error), error.status)
                 return
 
             if path == "/api/annotations":
@@ -355,6 +377,21 @@ def make_handler(
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
+            if path == '/api/features':
+                content_length = int(self.headers.get('Content-Length', '0'))
+                try:
+                    payload = json.loads(self.rfile.read(content_length) or b'{}')
+                except json.JSONDecodeError:
+                    self.send_text('Invalid JSON', HTTPStatus.BAD_REQUEST)
+                    return
+                if not {'layer_id', 'geometry'}.issubset(payload):
+                    self.send_text('Incomplete feature creation', HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    self.send_json(store.create_polygon(payload), HTTPStatus.CREATED)
+                except FeatureStoreError as error:
+                    self.send_text(str(error), error.status)
+                return
             if path != "/api/annotations":
                 self.send_text("Not found", HTTPStatus.NOT_FOUND)
                 return
@@ -373,14 +410,6 @@ def make_handler(
 
             if not payload.get('layer_id'):
                 self.send_text('Missing layer id', HTTPStatus.BAD_REQUEST)
-                return
-
-            feature_key = annotation_key(
-                str(payload['layer_id']),
-                str(payload['id']),
-            )
-            if feature_key not in assigned_feature_keys:
-                self.send_text('Feature is not assigned to this user', HTTPStatus.FORBIDDEN)
                 return
 
             if payload.get('annotation_label') not in review_config.annotation_labels:
@@ -411,6 +440,29 @@ def make_handler(
                 return
             try:
                 self.send_json(store.update_geometry(payload))
+            except (TypeError, ValueError):
+                self.send_text('Invalid feature version', HTTPStatus.BAD_REQUEST)
+            except FeatureStoreError as error:
+                self.send_text(str(error), error.status)
+
+        def do_DELETE(self) -> None:
+            '''*!*! Accept an optimistic soft-delete for one assigned polygon.'''
+
+            path = urlparse(self.path).path
+            if path != '/api/features':
+                self.send_text('Not found', HTTPStatus.NOT_FOUND)
+                return
+            content_length = int(self.headers.get('Content-Length', '0'))
+            try:
+                payload = json.loads(self.rfile.read(content_length) or b'{}')
+            except json.JSONDecodeError:
+                self.send_text('Invalid JSON', HTTPStatus.BAD_REQUEST)
+                return
+            if not {'id', 'layer_id', 'expected_version'}.issubset(payload):
+                self.send_text('Incomplete feature deletion', HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self.send_json(store.delete_polygon(payload))
             except (TypeError, ValueError):
                 self.send_text('Invalid feature version', HTTPStatus.BAD_REQUEST)
             except FeatureStoreError as error:
@@ -462,10 +514,6 @@ def main() -> None:
 
     if not os.environ.get('DATABASE_URL'):
         raise SystemExit('DATABASE_URL is required')
-    if 'annotation' not in review_config.modes:
-        raise SystemExit(
-            'Editing-only projects are not supported yet; include annotation mode'
-        )
 
     store = QaqcStore(
         review_config.project_id,

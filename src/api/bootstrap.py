@@ -299,9 +299,10 @@ INSERT INTO feature_layers (
     feature_id_field,
     fields,
     h3_prefix,
+    h3_resolutions,
     editing
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (project_id, id) DO UPDATE SET
     name = EXCLUDED.name,
     source_crs = EXCLUDED.source_crs,
@@ -309,6 +310,7 @@ ON CONFLICT (project_id, id) DO UPDATE SET
     feature_id_field = EXCLUDED.feature_id_field,
     fields = EXCLUDED.fields,
     h3_prefix = EXCLUDED.h3_prefix,
+    h3_resolutions = EXCLUDED.h3_resolutions,
     editing = EXCLUDED.editing,
     updated_at = now()
 ''',
@@ -326,6 +328,7 @@ ON CONFLICT (project_id, id) DO UPDATE SET
                 'display': list(layer.display_fields),
             }),
             layer.h3_prefix,
+            list(layer.h3_resolutions),
             Jsonb(vars(layer.editing)),
         ],
     )
@@ -370,19 +373,8 @@ WHERE project_id = %s AND layer_id = %s
                 [list(bounds_wgs84), config.project_id, layer.id],
             )
         feature_count = imported_row['feature_count']
-        current_count = connection.execute(
-            '''
-SELECT count(*) AS count
-FROM features
-WHERE project_id = %s AND layer_id = %s
-''',
-            [config.project_id, layer.id],
-        ).fetchone()['count']
-        if current_count != feature_count:
-            raise RuntimeError(
-                f'Layer {layer.id!r} import expects {feature_count:,} features '
-                f'but PostGIS contains {current_count:,}'
-            )
+        # *!*! The import ledger describes the immutable source snapshot. The
+        # *!*! live table may differ after user-created features or soft deletes.
         return feature_count, False
 
     existing_count = connection.execute(

@@ -216,6 +216,43 @@ class QaqcStoreTests(unittest.TestCase):
             payload,
         )
 
+    def test_delegates_polygon_creation_and_deletion(self):
+        '''*!*! Geometry lifecycle requests retain project and reviewer identity.'''
+
+        store = QaqcStore('project-one', 'alice')
+        polygon = {
+            'type': 'Polygon',
+            'coordinates': [[[0, 0], [0, 1], [1, 1], [0, 0]]],
+        }
+        create_payload = {
+            'layer_id': 'buildings',
+            'geometry': polygon,
+            'properties': {'source': 'drawn'},
+        }
+        delete_payload = {
+            'layer_id': 'buildings',
+            'id': 'one',
+            'expected_version': 2,
+        }
+        with patch('app.create_project_polygon', return_value={'id': 'new'}) as create:
+            self.assertEqual(store.create_polygon(create_payload), {'id': 'new'})
+        create.assert_called_once_with(
+            'project-one',
+            'alice',
+            'buildings',
+            polygon,
+            {'source': 'drawn'},
+        )
+        with patch('app.delete_project_polygon', return_value={'id': 'one'}) as delete:
+            self.assertEqual(store.delete_polygon(delete_payload), {'id': 'one'})
+        delete.assert_called_once_with(
+            'project-one',
+            'alice',
+            'buildings',
+            'one',
+            2,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

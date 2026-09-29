@@ -6,7 +6,6 @@ if (!configResponse.ok) {
 const {
   defaultAnnotationLabels,
   defaultCogPath,
-  configuredProjectName,
   configuredUser,
   workflowModes,
   todoH3Indexes,
@@ -26,7 +25,6 @@ const h3ZoomLayers = [
 ];
 
 // *!*! Cache stable DOM references once; feature and H3 layers are replaced frequently.
-const reviewerInput = document.getElementById('reviewer');
 const saveButton = document.getElementById('save');
 const selectedCell = document.getElementById('selected-cell');
 const selectedCellResolution = document.getElementById('selected-cell-resolution');
@@ -41,8 +39,6 @@ const openCount = document.getElementById('open-count');
 const previousFeatureButton = document.getElementById('previous-building');
 const nextOpenFeatureButton = document.getElementById('next-open-building');
 const nextFeatureButton = document.getElementById('next-building');
-const projectName = document.getElementById('project-name');
-const workflowSummary = document.getElementById('workflow-summary');
 const layerList = document.getElementById('layer-list');
 const annotationLabelSection = document.getElementById('annotation-label-section');
 const annotationNotesSection = document.getElementById('annotation-notes-section');
@@ -65,9 +61,9 @@ let featuresByLayer = new Map();
 let featuresByH3 = new Map();
 let annotations = {};
 let selectedCorrectLabel = '';
-let awaitingPointPlacement = false;
 let draftGeometry = null;
 let geometryDirty = false;
+let draftFeatureLayer = null;
 
 const annotationLabels = defaultAnnotationLabels;
 const cogPath = defaultCogPath;
@@ -105,7 +101,7 @@ function layerSupportsPolygonEditing(layer) {
     layer.modes.includes('editing') &&
     layer.geometryTypes.some((type) => ['Polygon', 'MultiPolygon'].includes(type)) &&
     layer.editing &&
-    (layer.editing.move || layer.editing.reshape)
+    (layer.editing.move || layer.editing.reshape || layer.editing.create || layer.editing.delete)
   );
 }
 
@@ -115,10 +111,21 @@ function availableTools(layer) {
     tools.push({ mode: 'annotation', label: 'Annotate' });
   }
   if (layerSupportsPolygonEditing(layer)) {
-    tools.push({ mode: 'polygon-editing', label: 'Edit polygons' });
+    if (layer.editing.move) {
+      tools.push({ mode: 'polygon-move', label: 'Move polygons' });
+    }
+    if (layer.editing.reshape) {
+      tools.push({ mode: 'polygon-reshape', label: 'Edit vertices' });
+    }
+    if (layer.editing.delete) {
+      tools.push({ mode: 'polygon-delete', label: 'Delete polygons' });
+    }
+    if (layer.editing.create) {
+      tools.push({ mode: 'polygon-create', label: 'Draw polygons' });
+    }
   }
   if (layerSupportsPointEditing(layer)) {
-    tools.push({ mode: 'point-editing', label: 'Edit points' });
+    tools.push({ mode: 'point-move', label: 'Move points' });
   }
   return tools;
 }
@@ -135,11 +142,6 @@ function firstAvailableTool() {
 
 let activeTool = firstAvailableTool();
 
-projectName.textContent = configuredProjectName || 'Feature Annotator';
-workflowSummary.textContent = `${layers.length} layer${layers.length === 1 ? '' : 's'} | ${todoAssignments.length || 'all'} H3 assignment${todoAssignments.length === 1 ? '' : 's'}`;
-reviewerInput.value = configuredUser;
-reviewerInput.readOnly = true;
-
 L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}',
   {
@@ -154,11 +156,27 @@ function isAnnotationMode() {
 }
 
 function isPointEditingMode() {
-  return activeTool.mode === 'point-editing';
+  return activeTool.mode === 'point-move';
 }
 
-function isPolygonEditingMode() {
-  return activeTool.mode === 'polygon-editing';
+function isPolygonMoveMode() {
+  return activeTool.mode === 'polygon-move';
+}
+
+function isPolygonReshapeMode() {
+  return activeTool.mode === 'polygon-reshape';
+}
+
+function isPolygonDeleteMode() {
+  return activeTool.mode === 'polygon-delete';
+}
+
+function isPolygonCreateMode() {
+  return activeTool.mode === 'polygon-create';
+}
+
+function isPolygonGeometryMode() {
+  return isPolygonMoveMode() || isPolygonReshapeMode();
 }
 
 function activeLayerDefinition() {
@@ -229,10 +247,23 @@ function configuredAnnotationLabels() {
 }
 
 function updateSaveButton() {
-  saveButton.textContent = isAnnotationMode() ? 'Save Annotation' : 'Save Geometry';
-  saveButton.disabled = isAnnotationMode()
-    ? !selectedFeature || !selectedCorrectLabel
-    : !selectedFeature || !geometryDirty;
+  if (isAnnotationMode()) {
+    saveButton.textContent = 'Save Annotation';
+    saveButton.disabled = !selectedFeature || !selectedCorrectLabel;
+    return;
+  }
+  if (isPolygonDeleteMode()) {
+    saveButton.textContent = 'Delete Polygon';
+    saveButton.disabled = !selectedFeature;
+    return;
+  }
+  if (isPolygonCreateMode()) {
+    saveButton.textContent = 'Save New Polygon';
+    saveButton.disabled = !draftFeatureLayer || !geometryDirty;
+    return;
+  }
+  saveButton.textContent = 'Save Geometry';
+  saveButton.disabled = !selectedFeature || !geometryDirty;
 }
 
 function setCorrectLabel(value) {
@@ -371,17 +402,40 @@ function visibleFeaturesForLayer(layer) {
   });
 }
 
-function setPointPlacement(active) {
-  awaitingPointPlacement = Boolean(active);
-  document.body.classList.toggle('point-placement', awaitingPointPlacement);
+function clearDraftFeature() {
+  if (draftFeatureLayer && map.hasLayer(draftFeatureLayer)) {
+    map.removeLayer(draftFeatureLayer);
+  }
+  draftFeatureLayer = null;
+  if (isPolygonCreateMode()) {
+    draftGeometry = null;
+    geometryDirty = false;
+  }
+}
+
+function syncPolygonDrawing() {
+  if (map.pm.globalDrawModeEnabled()) {
+    map.pm.disableDraw('Polygon');
+  }
+  document.body.classList.toggle('polygon-drawing', isPolygonCreateMode());
+  if (isPolygonCreateMode() && selectedCellId) {
+    map.pm.enableDraw('Polygon', {
+      allowSelfIntersection: false,
+      finishOn: 'dblclick',
+      snappable: false,
+    });
+  }
 }
 
 function configureModeControls() {
   const annotation = isAnnotationMode();
+  document.body.dataset.activeLayer = activeTool.layerId;
+  document.body.dataset.activeMode = activeTool.mode;
   annotationLabelSection.hidden = !annotation;
   annotationNotesSection.hidden = !annotation;
   toggleFeatureOutline.hidden = !annotation;
   nextOpenFeatureButton.hidden = !annotation;
+  syncPolygonDrawing();
   updateSaveButton();
 }
 
@@ -391,16 +445,38 @@ function selectLayerTool(layerId, mode) {
   if (!layer || !availableTools(layer).some((tool) => tool.mode === mode)) {
     return;
   }
+  if (activeTool.layerId === layerId && activeTool.mode === mode) {
+    return;
+  }
+
+  const sameLayer = activeTool.layerId === layerId;
+  const previousFeatureKey = sameLayer && selectedFeature
+    ? featureKey(selectedFeature)
+    : null;
+  const previousPosition = selectedCellPosition;
+  clearDraftFeature();
   layerStates.get(layerId).visible = true;
   activeTool = { layerId: layerId, mode: mode };
-  selectedCellId = null;
-  selectedCellRes = null;
-  selectedCellFeatureIds = [];
-  selectedCellPosition = 0;
-  clearSelectedFeature();
   configureModeControls();
   renderLayerPanel();
   renderFeatureLayers(false, true);
+
+  if (selectedCellId && selectedCellFeatureIds.length) {
+    const previousIndex = previousFeatureKey
+      ? selectedCellFeatureIds.indexOf(previousFeatureKey)
+      : -1;
+    selectFeatureAtCellPosition(
+      previousIndex >= 0 ? previousIndex : (sameLayer ? previousPosition : 0),
+      false
+    );
+    return;
+  }
+  const retainedLayer = previousFeatureKey
+    ? featureLayersById[previousFeatureKey]
+    : null;
+  if (retainedLayer) {
+    selectFeature(retainedLayer.feature, retainedLayer, !isAnnotationMode());
+  }
 }
 
 function renderLayerPanel() {
@@ -450,6 +526,10 @@ function renderLayerPanel() {
       button.classList.toggle(
         'active',
         activeTool.layerId === layer.id && activeTool.mode === tool.mode
+      );
+      button.setAttribute(
+        'aria-pressed',
+        String(activeTool.layerId === layer.id && activeTool.mode === tool.mode)
       );
       button.addEventListener('click', () => selectLayerTool(layer.id, tool.mode));
       actions.appendChild(button);
@@ -625,10 +705,10 @@ function styleFeature(feature, activeLayer) {
       : { color: '#111827', fillColor: '#fbbf24', fillOpacity: 0.96, opacity: 1, weight: 2 };
   }
   else if (complete) {
-    style = { color: '#14532d', fillColor: '#15803d', fillOpacity: 0.42, opacity: 1, weight: 1.4 };
+    style = { color: '#86efac', fillColor: '#16a34a', fillOpacity: 0.36, opacity: 1, weight: 1.8 };
   }
   else {
-    style = { color: '#475569', fillColor: '#64748b', fillOpacity: 0.22, opacity: 1, weight: 0.8 };
+    style = { color: '#f8fafc', fillColor: '#0ea5e9', fillOpacity: 0.24, opacity: 0.96, weight: 1.5 };
   }
   if (!activeLayer) {
     style.opacity = 0.52;
@@ -648,6 +728,9 @@ function disableSelectedGeometryEditing() {
   if (!selectedFeatureLayer || !selectedFeatureLayer.pm) {
     return;
   }
+  selectedFeatureLayer.off('pm:edit', capturePolygonDraft);
+  selectedFeatureLayer.off('pm:dragend', capturePolygonDraft);
+  selectedFeatureLayer.off('pm:dragend', capturePointDraft);
   selectedFeatureLayer.pm.disable();
   if (selectedFeatureLayer.pm.layerDragEnabled()) {
     selectedFeatureLayer.pm.disableLayerDrag();
@@ -664,19 +747,41 @@ function capturePolygonDraft() {
   updateSaveButton();
 }
 
+function capturePointDraft() {
+  if (!selectedFeatureLayer || !featureIsPoint(selectedFeature)) {
+    return;
+  }
+  const latlng = selectedFeatureLayer.getLatLng();
+  draftGeometry = {
+    type: 'Point',
+    coordinates: [latlng.lng, latlng.lat],
+  };
+  geometryDirty = true;
+  updateSelectedFeatureMarker();
+  updateSaveButton();
+}
+
+function enablePointDragging() {
+  if (!isPointEditingMode() || !selectedFeatureLayer || !selectedFeatureLayer.pm) {
+    return;
+  }
+  selectedFeatureLayer.pm.enableLayerDrag();
+  selectedFeatureLayer.on('pm:dragend', capturePointDraft);
+}
+
 function enablePolygonEditing() {
-  if (!isPolygonEditingMode() || !selectedFeatureLayer || !selectedFeatureLayer.pm) {
+  if (!isPolygonGeometryMode() || !selectedFeatureLayer || !selectedFeatureLayer.pm) {
     return;
   }
   const layer = activeLayerDefinition();
-  if (layer.editing.reshape) {
+  if (isPolygonReshapeMode() && layer.editing.reshape) {
     selectedFeatureLayer.pm.enable({ allowSelfIntersection: false });
+    selectedFeatureLayer.on('pm:edit', capturePolygonDraft);
   }
-  if (layer.editing.move) {
+  if (isPolygonMoveMode() && layer.editing.move) {
     selectedFeatureLayer.pm.enableLayerDrag();
+    selectedFeatureLayer.on('pm:dragend', capturePolygonDraft);
   }
-  selectedFeatureLayer.on('pm:edit', capturePolygonDraft);
-  selectedFeatureLayer.on('pm:dragend', capturePolygonDraft);
 }
 
 function updateSelectedOutlineButton() {
@@ -731,7 +836,9 @@ function updateSelectedFeatureMarker() {
   if (!selectedFeature || !selectedFeatureLayer) {
     return;
   }
-  const center = selectedFeatureLayer.getBounds().getCenter();
+  const center = featureIsPoint(selectedFeature)
+    ? selectedFeatureLayer.getLatLng()
+    : selectedFeatureLayer.getBounds().getCenter();
   if (featureIsPoint(selectedFeature)) {
     selectedFeatureMarker = L.circleMarker(center, {
       radius: 11,
@@ -769,7 +876,6 @@ function updateCounts() {
 
 function clearSelectedFeature() {
   disableSelectedGeometryEditing();
-  setPointPlacement(false);
   selectedFeature = null;
   selectedFeatureLayer = null;
   draftGeometry = null;
@@ -798,10 +904,10 @@ function selectFeature(feature, layer, activateEditing = false) {
   restyleFeatureLayers();
   updateSelectedFeatureMarker();
   updateCellProgress();
-  setPointPlacement(
-    activateEditing && isPointEditingMode() && featureIsPoint(feature)
-  );
-  if (activateEditing && isPolygonEditingMode() && featureIsPolygon(feature)) {
+  if (activateEditing && isPointEditingMode() && featureIsPoint(feature)) {
+    enablePointDragging();
+  }
+  if (activateEditing && isPolygonGeometryMode() && featureIsPolygon(feature)) {
     enablePolygonEditing();
   }
   updateSaveButton();
@@ -812,6 +918,8 @@ function clearSelectedCell() {
   selectedCellRes = null;
   selectedCellFeatureIds = [];
   selectedCellPosition = 0;
+  clearDraftFeature();
+  syncPolygonDrawing();
   renderFeatureLayers(false, true);
 }
 
@@ -824,6 +932,7 @@ function selectCellFeature(feature) {
     : 0;
   selectedCellPosition = nextOpenIndex >= 0 ? nextOpenIndex : 0;
   renderFeatureLayers(false, true);
+  syncPolygonDrawing();
   selectFeatureAtCellPosition(selectedCellPosition, false);
 }
 
@@ -842,7 +951,12 @@ function selectFeatureAtCellPosition(position, panToFeature) {
   }
   selectFeature(layer.feature, layer, !isAnnotationMode());
   if (panToFeature) {
-    map.fitBounds(layer.getBounds(), { padding: [40, 40], maxZoom: 21 });
+    if (featureIsPoint(layer.feature)) {
+      map.setView(layer.getLatLng(), Math.max(map.getZoom(), 18));
+    }
+    else {
+      map.fitBounds(layer.getBounds(), { padding: [40, 40], maxZoom: 21 });
+    }
   }
 }
 
@@ -867,10 +981,19 @@ function finishSelectedCellReview() {
 }
 
 function updateCellProgress() {
-  if (!selectedCellId || !selectedCellFeatureIds.length) {
+  if (!selectedCellId) {
     selectedCell.textContent = 'none';
     selectedCellResolution.textContent = 'none';
     selectedCellProgress.textContent = 'none';
+    previousFeatureButton.disabled = true;
+    nextOpenFeatureButton.disabled = true;
+    nextFeatureButton.disabled = true;
+    return;
+  }
+  if (!selectedCellFeatureIds.length) {
+    selectedCell.textContent = selectedCellId;
+    selectedCellResolution.textContent = `r${selectedCellRes}`;
+    selectedCellProgress.textContent = '0 features';
     previousFeatureButton.disabled = true;
     nextOpenFeatureButton.disabled = true;
     nextFeatureButton.disabled = true;
@@ -923,9 +1046,11 @@ function addFeatureLayer(layer) {
   };
   const group = L.geoJSON(data, {
     interactive: active,
+    bubblingMouseEvents: false,
     style: (feature) => styleFeature(feature, active),
     pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
       ...styleFeature(feature, active),
+      bubblingMouseEvents: false,
       interactive: active,
       radius: active ? 6 : 4,
     }),
@@ -997,22 +1122,7 @@ async function loadFeatures() {
   renderFeatureLayers(true);
 }
 
-function stagePointPlacement(latlng) {
-  if (!selectedFeature || !featureIsPoint(selectedFeature) || !selectedFeatureLayer) {
-    return;
-  }
-  selectedFeatureLayer.setLatLng(latlng);
-  draftGeometry = {
-    type: 'Point',
-    coordinates: [latlng.lng, latlng.lat],
-  };
-  geometryDirty = true;
-  setPointPlacement(false);
-  updateSelectedFeatureMarker();
-  updateSaveButton();
-}
-
-// *!*! Save geometry with optimistic version checking, then advance the green marker.
+// *!*! Save one staged edit without advancing the cell-local inspection queue.
 async function saveGeometry() {
   if (!selectedFeature || !draftGeometry || !geometryDirty) {
     return;
@@ -1025,6 +1135,7 @@ async function saveGeometry() {
       id: featureId(feature),
       layer_id: feature.layer_id,
       expected_version: feature.version,
+      operation: isPolygonReshapeMode() ? 'reshape' : 'move',
       geometry: draftGeometry,
     }),
   });
@@ -1034,11 +1145,78 @@ async function saveGeometry() {
   }
   Object.assign(feature, await response.json());
   indexFeatures();
-  const nextPosition = selectedCellFeatureIds.length > 1
-    ? selectedCellPosition + 1
-    : selectedCellPosition;
+  selectFeature(feature, selectedFeatureLayer, true);
+  updateH3Grid();
+  updateCounts();
+  updateCellProgress();
+}
+
+async function createPolygon() {
+  if (!isPolygonCreateMode() || !draftFeatureLayer || !draftGeometry) {
+    return;
+  }
+  const layer = activeLayerDefinition();
+  const response = await fetch('/api/features', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      layer_id: layer.id,
+      geometry: draftGeometry,
+      properties: {},
+    }),
+  });
+  if (!response.ok) {
+    alert(await response.text());
+    return;
+  }
+  const created = await response.json();
+  created.layer_name = layer.name;
+  created.editing = layer.editing;
+  buildingsData.features.push(created);
+  clearDraftFeature();
+  indexFeatures();
   renderFeatureLayers(false, true);
-  selectFeatureAtCellPosition(nextPosition, selectedCellFeatureIds.length > 1);
+  const createdIndex = selectedCellFeatureIds.indexOf(featureKey(created));
+  if (createdIndex >= 0) {
+    selectFeatureAtCellPosition(createdIndex, false);
+  }
+  syncPolygonDrawing();
+}
+
+async function deletePolygon() {
+  if (!isPolygonDeleteMode() || !selectedFeature || !featureIsPolygon(selectedFeature)) {
+    return;
+  }
+  const feature = selectedFeature;
+  if (!confirm(`Delete polygon ${featureId(feature)}?`)) {
+    return;
+  }
+  const response = await fetch('/api/features', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: featureId(feature),
+      layer_id: feature.layer_id,
+      expected_version: feature.version,
+    }),
+  });
+  if (!response.ok) {
+    alert(await response.text());
+    return;
+  }
+  const deletedKey = featureKey(feature);
+  buildingsData.features = buildingsData.features.filter(
+    (candidate) => featureKey(candidate) !== deletedKey
+  );
+  delete annotations[deletedKey];
+  indexFeatures();
+  renderFeatureLayers(false, true);
+  if (selectedCellFeatureIds.length) {
+    selectFeatureAtCellPosition(
+      Math.min(selectedCellPosition, selectedCellFeatureIds.length - 1),
+      false
+    );
+  }
 }
 
 async function saveAnnotation() {
@@ -1053,7 +1231,7 @@ async function saveAnnotation() {
     qa_status: 'annotated',
     qa_correct_class: selectedCorrectLabel,
     qa_notes: qaNotes.value,
-    reviewer: reviewerInput.value,
+    reviewer: configuredUser,
     feature_version_seen: selectedFeature.version,
   };
   const response = await fetch('/api/annotations?mode=annotation', {
@@ -1099,10 +1277,26 @@ nextFeatureButton.addEventListener('click', () => {
 
 map.on('zoomend', () => updateH3Grid());
 
-map.on('click', (event) => {
-  if (awaitingPointPlacement) {
-    stagePointPlacement(event.latlng);
+map.on('pm:create', (event) => {
+  if (!isPolygonCreateMode() || event.shape !== 'Polygon') {
+    map.removeLayer(event.layer);
+    return;
   }
+  if (draftFeatureLayer && draftFeatureLayer !== event.layer) {
+    map.removeLayer(draftFeatureLayer);
+  }
+  draftFeatureLayer = event.layer;
+  draftFeatureLayer.setStyle({
+    color: '#39ff14',
+    fillColor: '#39ff14',
+    fillOpacity: 0.16,
+    opacity: 1,
+    weight: 3,
+  });
+  draftGeometry = draftFeatureLayer.toGeoJSON().geometry;
+  geometryDirty = true;
+  map.pm.disableDraw('Polygon');
+  updateSaveButton();
 });
 
 document.addEventListener('keydown', (event) => {
@@ -1112,7 +1306,19 @@ document.addEventListener('keydown', (event) => {
 });
 
 saveButton.addEventListener('click', () => {
-  const operation = isAnnotationMode() ? saveAnnotation() : saveGeometry();
+  let operation;
+  if (isAnnotationMode()) {
+    operation = saveAnnotation();
+  }
+  else if (isPolygonCreateMode()) {
+    operation = createPolygon();
+  }
+  else if (isPolygonDeleteMode()) {
+    operation = deletePolygon();
+  }
+  else {
+    operation = saveGeometry();
+  }
   operation.catch((error) => alert(error.message));
 });
 

@@ -32,6 +32,8 @@ layers:
     editing:
       move: true
       reshape: true
+      create: true
+      delete: true
 
   - id: dins
     name: CAL FIRE DINS

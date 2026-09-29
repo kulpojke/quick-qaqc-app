@@ -15,7 +15,11 @@ from rasterio.transform import from_bounds
 import yaml
 
 from src.api.bootstrap import bootstrap_project
-from src.api.feature_store import read_project_features, update_project_geometry
+from src.api.feature_store import (
+    create_project_polygon,
+    read_project_features,
+    update_project_geometry,
+)
 from src.api.review_store import (
     read_reviewer_annotations,
     write_reviewer_annotation,
@@ -99,7 +103,11 @@ FROM (
                     'source': str(polygons),
                     'geometry_types': ['Polygon'],
                     'modes': ['annotation', 'editing'],
-                    'editing': {'move': True, 'reshape': True},
+                    'editing': {
+                        'move': True,
+                        'reshape': True,
+                        'create': True,
+                    },
                 },
                 {
                     'id': 'points',
@@ -180,6 +188,21 @@ FROM (
                             ]],
                         },
                     )
+                    created_polygon = create_project_polygon(
+                        project_id,
+                        'alice',
+                        'buildings',
+                        {
+                            'type': 'Polygon',
+                            'coordinates': [[
+                                [3.1, 3.1],
+                                [3.1, 3.5],
+                                [3.5, 3.5],
+                                [3.5, 3.1],
+                                [3.1, 3.1],
+                            ]],
+                        },
+                    )
 
                     second = bootstrap_project(config)
 
@@ -211,12 +234,13 @@ ORDER BY layer_id
                 self.assertEqual(moved_point['version'], 2)
                 self.assertEqual(moved_point['geometry']['coordinates'], [1.75, 1.75])
                 self.assertEqual(edited_polygon['version'], 2)
+                self.assertEqual(created_polygon['version'], 1)
                 self.assertEqual(
                     reviews['["points","point-inside"]']['qa_notes'],
                     'database review',
                 )
-                self.assertEqual(feature_rows, [('buildings', 2, 2), ('points', 1, 2)])
-                self.assertEqual(h3_count, 18)
+                self.assertEqual(feature_rows, [('buildings', 3, 2), ('points', 1, 2)])
+                self.assertEqual(h3_count, 24)
             finally:
                 with psycopg.connect(database_url) as connection:
                     connection.execute(

@@ -12,6 +12,7 @@ reads, and concurrent API updates.
 | `database.py` | Reads `DATABASE_URL`, creates the Psycopg connection pool, and provides request-scoped connections |
 | `migrate.py` | Applies numbered SQL files from `../../migrations/` once and verifies their checksums |
 | `bootstrap.py` | Reprojects and COG-filters configured GeoParquet layers, generates H3 rows, and synchronizes layer tasks and reviewer assignments |
+| `export.py` | Streams current feature layers and multi-reviewer annotations through DuckDB into revisioned local snapshots |
 | `feature_store.py` | Returns compact assigned features and applies browser point/polygon edits with optimistic version checking |
 | `review_store.py` | Reads and writes reviewer annotations with task, assignment, and feature-version checks |
 | `auth.py` | Derives development reviewer identity from `X-Reviewer-ID` and fails closed for unimplemented production authentication |
@@ -72,8 +73,10 @@ request
 
 Feature edits use optimistic version checks. An annotation is unique by task,
 layer, feature, and reviewer, so several reviewers can independently annotate
-the same feature. The browser exposes point placement plus polygon movement and
-vertex editing; property editing remains a backend foundation.
+the same feature. The browser exposes point dragging plus separate polygon
+movement, vertex editing, soft-deletion, and drawing modes. Newly drawn
+polygons receive a UUID from the server. Property editing remains a backend
+foundation.
 
 ## Commands
 
@@ -88,6 +91,30 @@ Initialize or reuse a configured project:
 ```bash
 python -m src.api.bootstrap --yaml camp_config.yaml
 ```
+
+Run one export directly for diagnostics:
+
+```bash
+python -m src.api.export --yaml camp_config.yaml
+```
+
+Compose normally runs the module with `--watch`. It checks compact per-layer
+feature and annotation tokens every two seconds and exports pending changes
+after five minutes or 50 saved edits, whichever comes first. The exporter uses
+a repeatable-read PostGIS transaction so files written in one batch share one
+project revision. It omits soft-deleted features and performs atomic DuckDB
+writes. Feature layers are GeoParquet; annotations are ordinary Parquet keyed
+by `annotation_id` and the composite `project_id`, `layer_id`, `feature_id`
+feature reference, represented in both outputs as `_dm_project_id`,
+`_dm_layer_id`, and `_dm_feature_id`. Annotation-only batches do not rewrite
+feature files. Local staging does not update `export_state`; that record is
+reserved for the later bucket-publish step.
+
+After a complete export batch validates, the worker retains the newest two
+generated revisions for each changed stream and deletes older generated files.
+The filename matcher is project-and-stream specific, and configured local
+source Parquets are protected from cleanup. `EXPORT_REVISIONS_TO_KEEP` can
+raise the retention count but must be at least one.
 
 Run the API directly:
 

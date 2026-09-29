@@ -19,12 +19,6 @@
 
   <!-- *!*! Review controls stay separate from the map so map redraws do not replace form state. -->
   <aside class="panel">
-    <section>
-      <h1 id="project-name">Feature Annotator</h1>
-      <p class="muted">Select an H3 cell, work through its features, then save annotations.</p>
-      <p class="muted" id="workflow-summary"></p>
-    </section>
-
     <section class="stats">
       <div class="stat"><span class="muted">Total</span><strong id="total-count">0</strong></div>
       <div class="stat"><span class="muted">Annotated</span><strong id="reviewed-count">0</strong></div>
@@ -38,11 +32,6 @@
     </section>
 
     <section class="form">
-      <label>
-        Annotator
-        <input id="reviewer" autocomplete="name" placeholder="annotator name">
-      </label>
-
       <div class="selected">
         <h2>Selected H3 Cell</h2>
         <div class="muted">Cell: <code id="selected-cell">none</code></div>

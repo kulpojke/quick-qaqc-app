@@ -41,10 +41,10 @@ body {
   box-shadow: var(--shadow);
   box-sizing: border-box;
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
-  gap: 14px;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 10px;
   overflow: auto;
-  padding: 18px;
+  padding: 12px;
   position: fixed;
   right: 0;
   top: 0;
@@ -52,15 +52,9 @@ body {
   z-index: 600;
 }
 
-h1,
 h2 {
   letter-spacing: 0;
   margin: 0;
-}
-
-h1 {
-  font-size: 1rem;
-  font-weight: 700;
 }
 
 h2 {
@@ -132,6 +126,7 @@ h2 {
 
 .layer-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding-left: 26px;
 }
@@ -159,15 +154,19 @@ h2 {
   width: 16px;
 }
 
-/* *!*! A crosshair is the only transient cue while the next map click places a point. */
-body.point-placement #map,
-body.point-placement #map * {
+/* *!*! Polygon drawing uses a crosshair while point movement uses direct dragging. */
+body.polygon-drawing #map,
+body.polygon-drawing #map * {
   cursor: crosshair;
+}
+
+body[data-active-mode='polygon-delete'] #save {
+  background: #b91c1c;
 }
 
 .form {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 label {
@@ -197,7 +196,7 @@ textarea {
 }
 
 textarea {
-  min-height: 92px;
+  min-height: 64px;
   resize: vertical;
 }
 
@@ -254,7 +253,7 @@ button:disabled {
   border-radius: 6px;
   display: grid;
   gap: 6px;
-  padding: 10px;
+  padding: 8px;
 }
 
 .selected code {

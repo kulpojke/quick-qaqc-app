@@ -114,6 +114,31 @@ services:
       - ./camp_config.yaml:/app/camp_config.yaml:ro
       - ./data:/app/data
 
+  # *!*! Keep host-visible feature and annotation snapshots current.
+  export:
+    <<: *application
+    command:
+      - python
+      - -m
+      - src.api.export
+      - --yaml
+      - camp_config.yaml
+      - --watch
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      <<: *database-environment
+      EXPORT_EDIT_THRESHOLD: ${EXPORT_EDIT_THRESHOLD:-50}
+      EXPORT_INTERVAL_SECONDS: ${EXPORT_INTERVAL_SECONDS:-300}
+      EXPORT_POLL_SECONDS: ${EXPORT_POLL_SECONDS:-2}
+      EXPORT_REVISIONS_TO_KEEP: ${EXPORT_REVISIONS_TO_KEEP:-2}
+    init: true
+    restart: unless-stopped
+    volumes:
+      - ./camp_config.yaml:/app/camp_config.yaml:ro
+      - ./tmp:/app/tmp
+
   # *!*! Print host-facing links only after both browser-facing services are healthy.
   startup:
     <<: *application

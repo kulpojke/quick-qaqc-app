@@ -10,6 +10,9 @@ initial schema; `src/api/migrate.py` records applied migrations and their
 checksums so each migration is applied once and cannot be silently changed
 afterward.
 
+`004_layer_h3_resolutions.sql` records each layer's configured resolutions so
+newly drawn features receive the same normalized H3 indexes as imported rows.
+
 ## Schema Overview
 
 | Table | Purpose |
@@ -64,14 +67,20 @@ GeoParquet snapshot is needed.
 
 [`feature_layers`](003_feature_layers.sql) separates independently sourced
 datasets within one project. It records source CRS, accepted geometry types,
-semantic column roles, H3 prefix, and permitted editing operations. Tasks,
+semantic column roles, H3 prefix and resolutions, and permitted editing operations. Tasks,
 features, imports, annotations, histories, and exports retain this layer
 identity.
 
 Bootstrap filters every layer by intersection with the imagery COG bounds.
-Future exports should write one versioned GeoParquet per layer from this
-relevant PostGIS subset, rather than copying the full original source such as
-a statewide point dataset.
+The export worker writes one versioned GeoParquet per layer from this relevant
+PostGIS subset, rather than copying the full original source such as a
+statewide point dataset.
+
+Current multi-reviewer annotations are exported separately as ordinary
+Parquet. `annotation_id` identifies an annotation row; `project_id`, `layer_id`,
+and `feature_id` join it back to the corresponding feature without assuming
+feature IDs are globally unique across layers. Exports name these shared join
+columns `_dm_project_id`, `_dm_layer_id`, and `_dm_feature_id`.
 
 ## Features
 
@@ -220,6 +229,10 @@ uses these rows to make startup idempotent: unchanged filtered sources are
 reused, while changed sources or bounds are rejected instead of replacing
 database edits.
 
+`feature_count` records how many rows came from the original filtered source.
+It is not required to equal the live `features` row count after reviewers draw
+new features or soft-delete imported ones.
+
 The import record is written in the same transaction as the project features
 and normalized H3 rows. A failed or interrupted import therefore leaves no
 partially initialized project.
@@ -235,5 +248,11 @@ The migrations create database structure only. They do not:
 - connect the legacy CSV-writing browser workflow to PostGIS.
 
 `src/api/bootstrap.py` performs the first two operations at container startup.
-The remaining operations belong to the API, authentication layer, and
-periodic export worker.
+The API handles current reads and writes, while `src/api/export.py` performs
+automatic local snapshots after five minutes or 50 feature or annotation
+edits. Bucket publication and production authentication remain separate
+future work.
+
+Local export retention keeps two generated revisions per stream by default.
+Cleanup occurs only after replacement files validate and never targets the
+configured immutable source Parquets.

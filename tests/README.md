@@ -15,6 +15,7 @@ database and are skipped when `TEST_DATABASE_URL` is absent.
 | `test_api_integration.py` | Independent multi-reviewer annotations, annotation history, successful feature edits, and stale-version conflicts in PostGIS |
 | `test_bootstrap.py` | Stable source identities, COG filtering, H3 generation, and deterministic layer task IDs |
 | `test_bootstrap_integration.py` | Transactional multi-layer import, out-of-COG filtering, point/polygon reads, database reviews, and preservation across repeated startup |
+| `test_export.py` | Revisioned feature/annotation snapshots, join keys, GeoParquet metadata, empty layers, and automatic time/edit thresholds |
 
 ## Relationships
 
@@ -23,6 +24,7 @@ test_project_config.py ----------> app.py + src/project_config.py
 test_frontend.py ----------------> app.py + frontend/
 test_fetch_overture_buildings.py -> src/fetch_overture_buildings.py
 test_bootstrap.py ---------------> src/api/bootstrap.py
+test_export.py ------------------> src/api/export.py
 test_api.py ---------------------> src/api/{auth,main,migrate,models}.py
 
 TEST_DATABASE_URL

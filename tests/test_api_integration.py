@@ -7,6 +7,7 @@ from uuid import uuid4
 import psycopg
 
 from src.api.main import app
+from src.api.feature_store import create_project_polygon, delete_project_polygon
 
 
 @unittest.skipUnless(
@@ -53,7 +54,7 @@ VALUES (
     ARRAY['Polygon', 'MultiPolygon'],
     'id',
     'h3_r',
-    '{"move": true, "reshape": true}'::jsonb
+    '{"move": true, "reshape": true, "create": true, "delete": true}'::jsonb
 )
 ''',
                 [cls.project_id],
@@ -195,3 +196,40 @@ VALUES
                 stale_response.json()['detail']['current']['version'],
                 2,
             )
+
+    def test_polygon_creation_indexes_h3_and_soft_delete(self):
+        '''*!*! Drawn polygons receive H3 rows and deletion preserves history.'''
+
+        created = create_project_polygon(
+            self.project_id,
+            'alice',
+            'buildings',
+            {
+                'type': 'Polygon',
+                'coordinates': [
+                    [[2, 2], [2, 3], [3, 3], [3, 2], [2, 2]],
+                ],
+            },
+            {'source': 'drawn'},
+        )
+
+        self.assertEqual(created['version'], 1)
+        self.assertEqual(set(created['h3']), {'5', '6', '7', '8', '9', '10'})
+        deleted = delete_project_polygon(
+            self.project_id,
+            'alice',
+            'buildings',
+            created['id'],
+            created['version'],
+        )
+        self.assertEqual(deleted['version'], 2)
+        row = self.connection.execute(
+            '''
+SELECT deleted_at, deleted_by
+FROM features
+WHERE project_id = %s AND layer_id = 'buildings' AND id = %s
+''',
+            [self.project_id, created['id']],
+        ).fetchone()
+        self.assertIsNotNone(row[0])
+        self.assertEqual(row[1], 'alice')

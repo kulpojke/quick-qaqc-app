@@ -9,6 +9,7 @@ import duckdb
 
 from src.api.bootstrap import (
     canonical_source,
+    import_layer,
     read_geoparquet_rows,
     sync_tasks,
     task_id_for,
@@ -142,6 +143,22 @@ FROM (
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 'inside')
         self.assertIn('"8":', rows[0][3])
+
+    def test_existing_import_allows_mutable_feature_count(self):
+        '''*!*! Startup reuses a source ledger after users add or delete rows.'''
+
+        connection = MagicMock(spec=['execute'])
+        connection.execute.return_value.fetchone.return_value = {
+            'source': str(Path('points.parquet').resolve()),
+            'feature_count': 2523,
+            'bounds_wgs84': [0, 0, 1, 1],
+        }
+        config = SimpleNamespace(project_id='camp')
+
+        result = import_layer(connection, config, self.layer(), (0, 0, 1, 1))
+
+        self.assertEqual(result, (2523, False))
+        connection.execute.assert_called_once()
 
 
 if __name__ == '__main__':

@@ -39,8 +39,31 @@ class FrontendTests(unittest.TestCase):
         self.assertIn('function renderLayerPanel()', javascript)
         self.assertIn("fetch('/api/features'", javascript)
         self.assertIn('function indexFeatures()', javascript)
+        self.assertIn("document.body.dataset.activeMode = activeTool.mode", javascript)
+        self.assertIn("const sameLayer = activeTool.layerId === layerId", javascript)
+        self.assertIn("selectedFeatureLayer.getLatLng()", javascript)
+        self.assertIn("map.setView(layer.getLatLng()", javascript)
+        self.assertIn("button.setAttribute(\n        'aria-pressed'", javascript)
+        self.assertIn("mode: 'polygon-move'", javascript)
+        self.assertIn("mode: 'polygon-reshape'", javascript)
+        self.assertIn("mode: 'polygon-delete'", javascript)
+        self.assertIn("mode: 'polygon-create'", javascript)
+        self.assertIn("method: 'DELETE'", javascript)
+        self.assertIn("map.on('pm:create'", javascript)
+        self.assertIn('bubblingMouseEvents: false', javascript)
+        self.assertIn('function enablePointDragging()', javascript)
+        self.assertIn("selectedFeatureLayer.on('pm:dragend', capturePointDraft)", javascript)
+        self.assertNotIn('stagePointPlacement', javascript)
+        self.assertIn("fillColor: '#0ea5e9'", javascript)
         self.assertIn('leaflet-geoman', html)
         self.assertNotIn('workflow-mode-buttons', html)
+        self.assertNotIn('id="project-name"', html)
+        self.assertNotIn('id="workflow-summary"', html)
+        self.assertNotIn('Select an H3 cell', html)
+        self.assertNotIn('id="reviewer"', html)
+        self.assertNotIn('reviewerInput', javascript)
+        self.assertIn('reviewer: configuredUser', javascript)
+        self.assertNotIn("getElementById('project-name')", javascript)
 
     def test_handler_serves_frontend_assets_and_runtime_config(self):
         '''*!*! Handler routes expose static assets plus JSON runtime configuration.'''
@@ -102,6 +125,11 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(config['workflowModes'], ['annotation'])
         self.assertEqual(config['layers'][0]['id'], 'buildings')
 
+        handler.wfile = BytesIO()
+        handler.path = '/api/buildings'
+        handler.do_GET()
+        self.assertEqual(store.read_buildings.call_count, 2)
+
     def test_handler_accepts_point_move_requests(self):
         '''*!*! Browser point moves are delegated to the database feature store.'''
 
@@ -133,6 +161,7 @@ class FrontendTests(unittest.TestCase):
             'id': 'point-one',
             'layer_id': 'points',
             'expected_version': 1,
+            'operation': 'move',
             'geometry': {'type': 'Point', 'coordinates': [-121.0, 39.0]},
         }).encode('utf-8')
         handler.path = '/api/features'
@@ -147,6 +176,78 @@ class FrontendTests(unittest.TestCase):
 
         store.update_geometry.assert_called_once()
         response = json.loads(handler.wfile.getvalue())
+        self.assertEqual(response['version'], 2)
+
+    def test_handler_accepts_polygon_create_and_delete_requests(self):
+        '''*!*! Browser drawing and deletion delegate to the feature store.'''
+
+        store = QaqcStore('project-one', 'alice')
+        store.read_buildings = Mock(
+            return_value={'type': 'FeatureCollection', 'features': []},
+        )
+        polygon = {
+            'type': 'Polygon',
+            'coordinates': [[[0, 0], [0, 1], [1, 1], [0, 0]]],
+        }
+        store.create_polygon = Mock(return_value={
+            'id': 'new-polygon',
+            'layer_id': 'buildings',
+            'geometry': polygon,
+            'version': 1,
+        })
+        store.delete_polygon = Mock(return_value={
+            'id': 'old-polygon',
+            'layer_id': 'buildings',
+            'version': 2,
+        })
+        config = SimpleNamespace(
+            annotation_labels=('damaged',),
+            imagery_cog='',
+            project_name='Test project',
+            user='alice',
+            modes=('editing',),
+            todo_h3_indexes=(),
+            layers=(),
+        )
+        handler_class = make_handler(store, config)
+
+        create_payload = json.dumps({
+            'layer_id': 'buildings',
+            'geometry': polygon,
+            'properties': {},
+        }).encode('utf-8')
+        create_handler = handler_class.__new__(handler_class)
+        create_handler.path = '/api/features'
+        create_handler.headers = {'Content-Length': str(len(create_payload))}
+        create_handler.rfile = BytesIO(create_payload)
+        create_handler.wfile = BytesIO()
+        create_handler.send_response = Mock()
+        create_handler.send_header = Mock()
+        create_handler.end_headers = Mock()
+
+        create_handler.do_POST()
+
+        store.create_polygon.assert_called_once()
+        create_handler.send_response.assert_called_with(201)
+
+        delete_payload = json.dumps({
+            'id': 'old-polygon',
+            'layer_id': 'buildings',
+            'expected_version': 1,
+        }).encode('utf-8')
+        delete_handler = handler_class.__new__(handler_class)
+        delete_handler.path = '/api/features'
+        delete_handler.headers = {'Content-Length': str(len(delete_payload))}
+        delete_handler.rfile = BytesIO(delete_payload)
+        delete_handler.wfile = BytesIO()
+        delete_handler.send_response = Mock()
+        delete_handler.send_header = Mock()
+        delete_handler.end_headers = Mock()
+
+        delete_handler.do_DELETE()
+
+        store.delete_polygon.assert_called_once()
+        response = json.loads(delete_handler.wfile.getvalue())
         self.assertEqual(response['version'], 2)
 
 

@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 readme_for_codex.md
 .env
+/tmp/*.parquet

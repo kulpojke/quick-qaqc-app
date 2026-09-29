@@ -92,6 +92,30 @@ relationships, history triggers, concurrency model, and export tracking.
 PostGIS remains the mutable source of truth. GeoParquet in R2 will be an
 immutable, versioned export rather than a file edited by reviewer clients.
 
+The Compose stack runs an export worker automatically. It writes one
+revisioned file per layer to project-root `tmp/` at startup and after feature
+or annotation changes reach either five minutes or 50 saved edits, whichever
+comes first. Soft-deleted features are excluded; current geometries, source
+properties, feature IDs, and generated H3 columns are retained.
+
+Current annotations are written to a separate ordinary Parquet file because
+their geometry remains in the feature GeoParquet. Each row retains its unique
+`annotation_id`, while `project_id`, `layer_id`, and `feature_id` form the
+collision-safe join back to a feature. In the files these shared columns are
+named `_dm_project_id`, `_dm_layer_id`, and `_dm_feature_id`; every feature
+layer receives the same standard keys regardless of its source ID field.
+Multiple reviewers therefore remain separate rows. Annotation-only changes
+update only this annotation snapshot, and an idle worker does not rewrite
+unchanged data.
+
+`EXPORT_POLL_SECONDS`, `EXPORT_INTERVAL_SECONDS`, and `EXPORT_EDIT_THRESHOLD`
+in `.env` tune the worker. `EXPORT_REVISIONS_TO_KEEP` defaults to `2`, retaining
+the current generated snapshot plus one rollback revision for each stream.
+Cleanup runs only after a complete new batch validates, matches only
+exporter-generated revision names, and explicitly protects configured local
+source files. These files are local staging outputs and do not update
+`export_state` until bucket publication is implemented.
+
 For an assigned project, pass its YAML file to the app:
 
 ```bash
@@ -168,11 +192,13 @@ python src/fetch_overture_buildings.py \
 ```
 
 Annotation and editing use independent tasks per layer; QA/QC is no longer a
-separate configured mode. The layer panel provides an annotation or
-geometry-editing mode for each eligible layer. The active layer is interactive
-and rendered above visible context layers. Point layers remain hidden until an
-H3 cell is selected. Point placement and Leaflet-Geoman polygon changes are
-saved with optimistic version checking.
+separate configured mode. The layer panel provides annotation plus
+capability-specific geometry modes for each eligible layer: point movement and
+polygon movement, vertex editing, deletion, and drawing. The active layer is
+interactive and rendered above visible context layers. Point layers remain
+hidden until an H3 cell is selected. Geometry changes are saved with optimistic
+version checking; only annotation saves automatically advance to the next
+feature.
 
 Open `http://127.0.0.1:8501` in a web browser. Project, imagery, labels,
 reviewer, modes, and assignments come from the YAML configuration.
