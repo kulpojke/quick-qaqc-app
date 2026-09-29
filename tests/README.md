@@ -8,12 +8,12 @@ database and are skipped when `TEST_DATABASE_URL` is absent.
 
 | File | Coverage |
 | --- | --- |
-| `test_project_config.py` | Layer-aware YAML validation, path resolution, and PostGIS feature/review delegation |
+| `test_project_config.py` | Multi-reviewer YAML assignments, layer-aware validation, path resolution, and PostGIS delegation |
 | `test_fetch_overture_buildings.py` | Fused release discovery and selection, historical schema handling, COG bounds, clipping, H3 enrichment, and cache reuse |
-| `test_frontend.py` | Static frontend separation, layer-mode controls, runtime config, geometry-edit routing, MIME types, and startup URLs |
-| `test_api.py` | API request-model validation, development authentication, response shaping, and migration checksums without a database |
+| `test_frontend.py` | Reviewer-scoped runtime config, layer-mode controls, geometry-edit routing, static assets, and startup URLs |
+| `test_api.py` | API models, development and Cloudflare identity handling, response shaping, and migration checksums without a database |
 | `test_api_integration.py` | Independent multi-reviewer annotations, annotation history, successful feature edits, and stale-version conflicts in PostGIS |
-| `test_bootstrap.py` | Stable source identities, COG filtering, H3 generation, and deterministic layer task IDs |
+| `test_bootstrap.py` | Multi-reviewer assignment sync, stable source identities, COG filtering, H3 generation, and deterministic tasks |
 | `test_bootstrap_integration.py` | Transactional multi-layer import, out-of-COG filtering, point/polygon reads, database reviews, and preservation across repeated startup |
 | `test_export.py` | Revisioned feature/annotation snapshots, join keys, GeoParquet metadata, empty layers, and automatic time/edit thresholds |
 

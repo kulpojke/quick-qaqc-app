@@ -20,7 +20,29 @@ ENV HOME=/home/app
 
 USER ${APP_UID}:${APP_GID}
 
-RUN python -c "import duckdb; connection = duckdb.connect(); connection.execute('INSTALL spatial'); connection.execute('INSTALL httpfs'); connection.execute('INSTALL postgres'); connection.close()"
+# *!*! Cache required DuckDB extensions in the application user's home. Retry
+# *!*! transient repository failures and report the extension being installed.
+RUN python <<'PY'
+import time
+
+import duckdb
+
+
+connection = duckdb.connect()
+try:
+    for extension in ('spatial', 'httpfs'):
+        print(f'Installing DuckDB extension: {extension}', flush=True)
+        for attempt in range(3):
+            try:
+                connection.execute(f'INSTALL {extension}')
+                break
+            except duckdb.IOException:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+finally:
+    connection.close()
+PY
 
 COPY --chown=${APP_UID}:${APP_GID} . /app
 

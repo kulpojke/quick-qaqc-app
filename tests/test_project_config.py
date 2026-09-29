@@ -23,7 +23,7 @@ class ReviewConfigTests(unittest.TestCase):
         '''*!*! Return a minimal project with point and polygon layers.'''
 
         return {
-            'version': 2,
+            'version': 3,
             'project': {'id': 'test-review', 'name': 'Test review'},
             'paths': {'imagery_cog': 'imagery/image.tif'},
             'fields': {'predicted_class': 'prediction'},
@@ -55,9 +55,24 @@ class ReviewConfigTests(unittest.TestCase):
             ],
             'annotation': {'labels': ['damaged', 'undamaged']},
             'workflow': {
-                'user': 'alice',
                 'modes': ['annotation', 'editing'],
-                'todo': [{'h3_index': '8828308281fffff'}],
+                'reviewers': [
+                    {
+                        'id': 'alice@example.com',
+                        'assignments': [
+                            {
+                                'layer': 'buildings',
+                                'modes': ['annotation'],
+                                'h3_indexes': ['8828308281fffff'],
+                            },
+                            {
+                                'layer': 'points',
+                                'modes': ['annotation', 'editing'],
+                                'h3_indexes': [],
+                            },
+                        ],
+                    },
+                ],
             },
         }
 
@@ -85,17 +100,24 @@ class ReviewConfigTests(unittest.TestCase):
             self.assertEqual(config.layers[1].geometry_types, ('Point',))
             self.assertEqual(config.layers[1].source_crs, 'EPSG:6414')
             self.assertTrue(config.layers[1].editing.move)
-            self.assertEqual(config.todo_h3_indexes, ('8828308281fffff',))
+            reviewer = config.reviewer('alice@example.com')
+            self.assertIsNotNone(reviewer)
+            self.assertEqual(reviewer.modes, ('annotation', 'editing'))
+            self.assertEqual(
+                reviewer.assignment_for('buildings', 'annotation').h3_indexes,
+                ('8828308281fffff',),
+            )
+            self.assertIsNone(reviewer.assignment_for('buildings', 'editing'))
 
-    def test_rejects_version_one_configuration(self):
-        '''*!*! The old single-feature-source schema fails with a clear version error.'''
+    def test_rejects_version_two_configuration(self):
+        '''*!*! The former single-reviewer schema fails with a clear version error.'''
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['version'] = 1
+            values['version'] = 2
             path = self.write_config(Path(temp_dir), values)
 
-            with self.assertRaisesRegex(ConfigError, 'expected 2'):
+            with self.assertRaisesRegex(ConfigError, 'expected 3'):
                 load_review_config(path)
 
     def test_rejects_duplicate_layer_ids(self):
@@ -158,10 +180,38 @@ class ReviewConfigTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             values = self.base_config()
-            values['workflow']['todo'] = [{'h3_index': 'not-an-h3-cell'}]
+            values['workflow']['reviewers'][0]['assignments'][0]['h3_indexes'] = [
+                'not-an-h3-cell'
+            ]
             path = self.write_config(Path(temp_dir), values)
 
             with self.assertRaisesRegex(ConfigError, 'not a valid H3 index'):
+                load_review_config(path)
+
+    def test_rejects_duplicate_reviewer_ids(self):
+        '''*!*! Authenticated identities uniquely identify configured reviewers.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['workflow']['reviewers'].append(
+                values['workflow']['reviewers'][0].copy()
+            )
+            path = self.write_config(Path(temp_dir), values)
+
+            with self.assertRaisesRegex(ConfigError, 'Duplicate reviewer id'):
+                load_review_config(path)
+
+    def test_rejects_assignment_mode_not_enabled_for_layer(self):
+        '''*!*! Reviewer tools remain a subset of each layer's enabled modes.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            values['workflow']['reviewers'][0]['assignments'][0]['modes'] = [
+                'editing'
+            ]
+            path = self.write_config(Path(temp_dir), values)
+
+            with self.assertRaisesRegex(ConfigError, 'not enabled for layer'):
                 load_review_config(path)
 
 

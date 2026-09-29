@@ -94,7 +94,7 @@ FROM (
         '''*!*! Write a two-layer project configuration for bootstrap.'''
 
         values = {
-            'version': 2,
+            'version': 3,
             'project': {'id': project_id, 'name': 'Bootstrap integration test'},
             'paths': {'imagery_cog': str(cog)},
             'layers': [
@@ -119,9 +119,22 @@ FROM (
             ],
             'annotation': {'labels': ['damaged', 'undamaged']},
             'workflow': {
-                'user': 'alice',
                 'modes': ['annotation', 'editing'],
-                'todo': [],
+                'reviewers': [{
+                    'id': 'alice',
+                    'assignments': [
+                        {
+                            'layer': 'buildings',
+                            'modes': ['annotation', 'editing'],
+                            'h3_indexes': [],
+                        },
+                        {
+                            'layer': 'points',
+                            'modes': ['annotation', 'editing'],
+                            'h3_indexes': [],
+                        },
+                    ],
+                }],
             },
         }
         path.write_text(yaml.safe_dump(values), encoding='utf-8')

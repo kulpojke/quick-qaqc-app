@@ -195,7 +195,7 @@ WHERE ST_Intersects({geometry_wgs84}, ST_GeomFromText(?))
 
 
 def sync_tasks(connection, config: ReviewConfig) -> dict[str, UUID]:
-    '''*!*! Synchronize layer tasks and this reviewer's H3 assignments.'''
+    '''*!*! Synchronize managed tasks and every configured reviewer assignment.'''
 
     import h3
 
@@ -206,7 +206,6 @@ def sync_tasks(connection, config: ReviewConfig) -> dict[str, UUID]:
     )
 
     task_ids = {}
-    all_features = not config.todo_h3_indexes
     for layer in config.layers:
         for mode in layer.modes:
             task_id = task_id_for(config.project_id, layer.id, mode)
@@ -248,26 +247,41 @@ WHERE tasks.project_id = EXCLUDED.project_id
                     labels,
                 ],
             )
+            # *!*! Reset old YAML-managed access without deleting reviewer rows;
+            # *!*! annotations retain their foreign-key parent and history.
             connection.execute(
                 '''
+UPDATE task_reviewers
+SET all_features = false
+WHERE task_id = %s
+''',
+                [task_id],
+            )
+            connection.execute(
+                '''
+DELETE FROM task_h3_assignments
+WHERE task_id = %s
+''',
+                [task_id],
+            )
+            assignment_rows = []
+            for reviewer in config.reviewers:
+                assignment = reviewer.assignment_for(layer.id, mode)
+                if assignment is None:
+                    continue
+                connection.execute(
+                    '''
 INSERT INTO task_reviewers (task_id, reviewer_id, all_features)
 VALUES (%s, %s, %s)
 ON CONFLICT (task_id, reviewer_id) DO UPDATE SET
     all_features = EXCLUDED.all_features
 ''',
-                [task_id, config.user, all_features],
-            )
-            connection.execute(
-                '''
-DELETE FROM task_h3_assignments
-WHERE task_id = %s AND reviewer_id = %s
-''',
-                [task_id, config.user],
-            )
-            assignment_rows = [
-                [task_id, config.user, h3.get_resolution(index), index]
-                for index in config.todo_h3_indexes
-            ]
+                    [task_id, reviewer.id, not assignment.h3_indexes],
+                )
+                assignment_rows.extend(
+                    [task_id, reviewer.id, h3.get_resolution(index), index]
+                    for index in assignment.h3_indexes
+                )
             if assignment_rows:
                 with connection.cursor() as cursor:
                     cursor.executemany(

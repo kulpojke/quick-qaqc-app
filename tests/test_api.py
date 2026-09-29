@@ -6,7 +6,11 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from src.api.auth import authenticated_reviewer
+from src.api.auth import (
+    AuthenticationError,
+    authenticated_reviewer,
+    resolve_reviewer_identity,
+)
 from src.api.feature_store import FeatureStoreError, _point_coordinates
 from src.api.main import geojson_feature
 from src.api.migrate import migration_checksum
@@ -82,8 +86,8 @@ class ApiModelTests(unittest.TestCase):
         self.assertNotIn('version', feature['properties'])
 
 
-class DevelopmentAuthTests(unittest.TestCase):
-    '''*!*! Tests temporary header authentication used by the local stack.'''
+class AuthenticationTests(unittest.TestCase):
+    '''*!*! Test development identity and Cloudflare Access validation.'''
 
     def test_accepts_a_valid_development_reviewer(self):
         '''*!*! Development auth derives identity from its dedicated header.'''
@@ -102,8 +106,55 @@ class DevelopmentAuthTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 401)
 
-    def test_non_development_auth_fails_closed(self):
-        '''*!*! Unimplemented production auth cannot silently trust a header.'''
+    def test_accepts_configured_development_fallback(self):
+        '''*!*! A local browser can use the configured development identity.'''
+
+        with patch.dict(
+            os.environ,
+            {'AUTH_MODE': 'development', 'DEV_REVIEWER_ID': 'pazazu'},
+            clear=True,
+        ):
+            reviewer_id = resolve_reviewer_identity({})
+
+        self.assertEqual(reviewer_id, 'pazazu')
+
+    def test_validates_cloudflare_identity_from_signed_claims(self):
+        '''*!*! Cloudflare mode uses the validated JWT email as reviewer ID.'''
+
+        environment = {
+            'AUTH_MODE': 'cloudflare',
+            'CF_ACCESS_TEAM_DOMAIN': 'https://team.cloudflareaccess.com',
+            'CF_ACCESS_AUD': 'audience-tag',
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch(
+                'src.api.auth.decode_cloudflare_access_token',
+                return_value={'email': 'alice+field@example.com'},
+            ) as decode,
+        ):
+            reviewer_id = resolve_reviewer_identity({
+                'Cf-Access-Jwt-Assertion': 'signed-token',
+            })
+
+        self.assertEqual(reviewer_id, 'alice+field@example.com')
+        decode.assert_called_once_with(
+            'signed-token',
+            'https://team.cloudflareaccess.com',
+            'audience-tag',
+        )
+
+    def test_cloudflare_mode_rejects_missing_configuration(self):
+        '''*!*! Production auth fails closed without Access issuer settings.'''
+
+        with patch.dict(os.environ, {'AUTH_MODE': 'cloudflare'}, clear=True):
+            with self.assertRaises(AuthenticationError) as raised:
+                resolve_reviewer_identity({'Cf-Access-Jwt-Assertion': 'token'})
+
+        self.assertEqual(raised.exception.status, 503)
+
+    def test_unknown_auth_mode_fails_closed(self):
+        '''*!*! Unknown authentication modes cannot silently trust a header.'''
 
         with patch.dict(os.environ, {'AUTH_MODE': 'oidc'}):
             with self.assertRaises(HTTPException) as raised:

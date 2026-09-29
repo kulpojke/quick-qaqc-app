@@ -14,7 +14,12 @@ from src.api.bootstrap import (
     sync_tasks,
     task_id_for,
 )
-from src.project_config import EditingConfig, LayerConfig
+from src.project_config import (
+    EditingConfig,
+    LayerConfig,
+    ReviewerAssignmentConfig,
+    ReviewerConfig,
+)
 
 
 class BootstrapTests(unittest.TestCase):
@@ -76,6 +81,22 @@ class BootstrapTests(unittest.TestCase):
             editing=EditingConfig(move='editing' in modes),
         )
 
+    def reviewer(
+        self,
+        reviewer_id: str,
+        h3_indexes: tuple[str, ...],
+    ) -> ReviewerConfig:
+        '''*!*! Return one reviewer assigned to the test point layer.'''
+
+        return ReviewerConfig(
+            id=reviewer_id,
+            assignments=(ReviewerAssignmentConfig(
+                layer_id='points',
+                modes=('annotation',),
+                h3_indexes=h3_indexes,
+            ),),
+        )
+
     def test_sync_tasks_skips_empty_h3_batch(self):
         '''*!*! All-feature assignments do not execute an empty H3 batch.'''
 
@@ -86,8 +107,7 @@ class BootstrapTests(unittest.TestCase):
             annotation_labels=('damaged', 'undamaged'),
             modes=('annotation',),
             layers=(self.layer(),),
-            user='alice',
-            todo_h3_indexes=(),
+            reviewers=(self.reviewer('alice', ()),),
         )
 
         sync_tasks(connection, config)
@@ -105,13 +125,22 @@ class BootstrapTests(unittest.TestCase):
             annotation_labels=('damaged', 'undamaged'),
             modes=('annotation',),
             layers=(self.layer(),),
-            user='alice',
-            todo_h3_indexes=('8828308281fffff',),
+            reviewers=(
+                self.reviewer('alice', ('8828308281fffff',)),
+                self.reviewer('bob', ()),
+            ),
         )
 
         sync_tasks(connection, config)
 
         cursor.executemany.assert_called_once()
+        rows = cursor.executemany.call_args.args[1]
+        self.assertEqual(rows, [[
+            task_id_for('camp', 'points', 'annotation'),
+            'alice',
+            8,
+            '8828308281fffff',
+        ]])
 
     def test_filters_layers_to_cog_bounds_and_generates_h3(self):
         '''*!*! Point imports retain only COG-intersecting source features.'''

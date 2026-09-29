@@ -10,11 +10,12 @@ from urllib.parse import urlparse
 import yaml
 
 
-SUPPORTED_VERSION = 2
+SUPPORTED_VERSION = 3
 ALLOWED_MODES = {'annotation', 'editing'}
 ALLOWED_GEOMETRY_TYPES = {'Point', 'MultiPoint', 'Polygon', 'MultiPolygon'}
 DEFAULT_H3_RESOLUTIONS = (5, 6, 7, 8, 9, 10)
 LAYER_ID_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+REVIEWER_ID_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.+@-]{0,254}$')
 
 
 class ConfigError(ValueError):
@@ -51,6 +52,49 @@ class LayerConfig:
 
 
 @dataclass(frozen=True)
+class ReviewerAssignmentConfig:
+    '''*!*! Assign one reviewer to layer modes and optional H3 cells.'''
+
+    layer_id: str
+    modes: tuple[str, ...]
+    h3_indexes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReviewerConfig:
+    '''*!*! Describe one authenticated reviewer and their project assignments.'''
+
+    id: str
+    assignments: tuple[ReviewerAssignmentConfig, ...]
+
+    @property
+    def modes(self) -> tuple[str, ...]:
+        '''*!*! Return the reviewer's enabled modes in configuration order.'''
+
+        return tuple(dict.fromkeys(
+            mode
+            for assignment in self.assignments
+            for mode in assignment.modes
+        ))
+
+    def assignment_for(
+        self,
+        layer_id: str,
+        mode: str,
+    ) -> ReviewerAssignmentConfig | None:
+        '''*!*! Return this reviewer's assignment for one layer and mode.'''
+
+        return next(
+            (
+                assignment
+                for assignment in self.assignments
+                if assignment.layer_id == layer_id and mode in assignment.modes
+            ),
+            None,
+        )
+
+
+@dataclass(frozen=True)
 class ReviewConfig:
     '''*!*! Validated settings loaded from one project YAML file.'''
 
@@ -60,9 +104,16 @@ class ReviewConfig:
     imagery_cog: str
     layers: tuple[LayerConfig, ...]
     annotation_labels: tuple[str, ...]
-    user: str
     modes: tuple[str, ...]
-    todo_h3_indexes: tuple[str, ...]
+    reviewers: tuple[ReviewerConfig, ...]
+
+    def reviewer(self, reviewer_id: str) -> ReviewerConfig | None:
+        '''*!*! Return one configured reviewer by authenticated identity.'''
+
+        return next(
+            (reviewer for reviewer in self.reviewers if reviewer.id == reviewer_id),
+            None,
+        )
 
 
 def _mapping(parent: dict, key: str) -> dict:
@@ -112,29 +163,17 @@ def _is_http_url(value: str) -> bool:
     return parsed.scheme.lower() in {'http', 'https'} and bool(parsed.netloc)
 
 
-def _expand_user_template(value: str, user: str, field: str) -> str:
-    '''*!*! Expand the supported user placeholder in a configured value.'''
-
-    try:
-        return value.format(user=user)
-    except (KeyError, ValueError) as error:
-        raise ConfigError(
-            f'{field} contains an unsupported template field; only {{user}} is allowed'
-        ) from error
-
-
 def _resolve_source(
     value: object,
     *,
     base_dir: Path,
-    user: str,
     field: str,
 ) -> Path | str:
     '''*!*! Resolve one local path while preserving an HTTP(S) URL.'''
 
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f'{field} must be a local path or HTTP(S) URL')
-    rendered = _expand_user_template(value.strip(), user, field)
+    rendered = value.strip()
     if _is_http_url(rendered):
         return rendered
     path = Path(rendered).expanduser()
@@ -154,25 +193,33 @@ def _parse_modes(workflow: dict) -> tuple[str, ...]:
     return normalized
 
 
-def _parse_todo(workflow: dict) -> tuple[str, ...]:
-    '''*!*! Validate and deduplicate configured H3 TODO assignments.'''
+def _parse_h3_indexes(
+    values: object,
+    *,
+    field: str,
+    allowed_resolutions: tuple[int, ...],
+) -> tuple[str, ...]:
+    '''*!*! Validate H3 cells assigned to one reviewer layer.'''
 
     import h3
 
-    todo = workflow.get('todo', [])
-    if not isinstance(todo, list):
-        raise ConfigError('workflow.todo must be a list')
+    if not isinstance(values, list):
+        raise ConfigError(f'{field} must be a list')
 
     indexes = []
-    for position, item in enumerate(todo):
+    for position, item in enumerate(values):
         index = item.get('h3_index') if isinstance(item, dict) else item
         if not isinstance(index, str) or not index.strip():
-            raise ConfigError(
-                f'workflow.todo[{position}].h3_index must be a non-empty string'
-            )
+            raise ConfigError(f'{field}[{position}] must be a non-empty H3 index')
         index = index.strip()
         if not h3.is_valid_cell(index):
-            raise ConfigError(f'workflow.todo[{position}] is not a valid H3 index: {index}')
+            raise ConfigError(f'{field}[{position}] is not a valid H3 index: {index}')
+        resolution = h3.get_resolution(index)
+        if resolution not in allowed_resolutions:
+            raise ConfigError(
+                f'{field}[{position}] uses resolution {resolution}, but its layer '
+                f'generates only {list(allowed_resolutions)}'
+            )
         indexes.append(index)
     return tuple(dict.fromkeys(indexes))
 
@@ -274,7 +321,6 @@ def _parse_layers(
     root: dict,
     *,
     base_dir: Path,
-    user: str,
     workflow_modes: tuple[str, ...],
 ) -> tuple[LayerConfig, ...]:
     '''*!*! Parse independent point and polygon GeoParquet layers.'''
@@ -303,7 +349,6 @@ def _parse_layers(
             source=_resolve_source(
                 value.get('source'),
                 base_dir=base_dir,
-                user=user,
                 field=f'layers[{position}].source',
             ),
             source_crs=_optional_string(value, 'crs', 'EPSG:4326'),
@@ -323,6 +368,83 @@ def _parse_layers(
             )
         layers.append(parsed)
     return tuple(layers)
+
+
+def _parse_reviewers(
+    workflow: dict,
+    layers: tuple[LayerConfig, ...],
+) -> tuple[ReviewerConfig, ...]:
+    '''*!*! Validate reviewer identities and layer-specific assignments.'''
+
+    values = workflow.get('reviewers')
+    if not isinstance(values, list) or not values:
+        raise ConfigError('workflow.reviewers must be a non-empty list')
+
+    layer_by_id = {layer.id: layer for layer in layers}
+    reviewers = []
+    seen_reviewer_ids = set()
+    for reviewer_position, value in enumerate(values):
+        field = f'workflow.reviewers[{reviewer_position}]'
+        if not isinstance(value, dict):
+            raise ConfigError(f'{field} must be a mapping')
+        reviewer_id = _required_string(value, 'id', field)
+        if not REVIEWER_ID_PATTERN.fullmatch(reviewer_id):
+            raise ConfigError(f'{field}.id contains unsupported characters')
+        if reviewer_id in seen_reviewer_ids:
+            raise ConfigError(f'Duplicate reviewer id: {reviewer_id}')
+        seen_reviewer_ids.add(reviewer_id)
+
+        assignment_values = value.get('assignments')
+        if not isinstance(assignment_values, list) or not assignment_values:
+            raise ConfigError(f'{field}.assignments must be a non-empty list')
+        assignments = []
+        seen_layer_modes = set()
+        for assignment_position, assignment_value in enumerate(assignment_values):
+            assignment_field = f'{field}.assignments[{assignment_position}]'
+            if not isinstance(assignment_value, dict):
+                raise ConfigError(f'{assignment_field} must be a mapping')
+            layer_id = _required_string(assignment_value, 'layer', assignment_field)
+            layer = layer_by_id.get(layer_id)
+            if layer is None:
+                raise ConfigError(f'{assignment_field}.layer is unknown: {layer_id}')
+
+            mode_values = assignment_value.get('modes', list(layer.modes))
+            if not isinstance(mode_values, list) or not mode_values:
+                raise ConfigError(f'{assignment_field}.modes must be a non-empty list')
+            modes = tuple(dict.fromkeys(
+                str(mode).strip().lower() for mode in mode_values
+            ))
+            invalid_modes = sorted(set(modes) - set(layer.modes))
+            if invalid_modes:
+                invalid_modes_text = ', '.join(invalid_modes)
+                raise ConfigError(
+                    f'{assignment_field}.modes are not enabled for layer {layer_id}: '
+                    f'{invalid_modes_text}'
+                )
+            duplicate_modes = sorted(
+                mode for mode in modes if (layer_id, mode) in seen_layer_modes
+            )
+            if duplicate_modes:
+                duplicate_modes_text = ', '.join(duplicate_modes)
+                raise ConfigError(
+                    f'{assignment_field} duplicates {layer_id} mode(s): '
+                    f'{duplicate_modes_text}'
+                )
+            seen_layer_modes.update((layer_id, mode) for mode in modes)
+            assignments.append(ReviewerAssignmentConfig(
+                layer_id=layer_id,
+                modes=modes,
+                h3_indexes=_parse_h3_indexes(
+                    assignment_value.get('h3_indexes', []),
+                    field=f'{assignment_field}.h3_indexes',
+                    allowed_resolutions=layer.h3_resolutions,
+                ),
+            ))
+        reviewers.append(ReviewerConfig(
+            id=reviewer_id,
+            assignments=tuple(assignments),
+        ))
+    return tuple(reviewers)
 
 
 def load_review_config(path: Path) -> ReviewConfig:
@@ -345,7 +467,6 @@ def load_review_config(path: Path) -> ReviewConfig:
     project = _mapping(root, 'project')
     paths = _mapping(root, 'paths')
     workflow = _mapping(root, 'workflow')
-    user = _required_string(workflow, 'user', 'workflow')
     modes = _parse_modes(workflow)
     base_dir = source_path.parent
     project_name = _optional_string(project, 'name', source_path.stem)
@@ -356,13 +477,11 @@ def load_review_config(path: Path) -> ReviewConfig:
     imagery_cog = str(_resolve_source(
         paths.get('imagery_cog'),
         base_dir=base_dir,
-        user=user,
         field='paths.imagery_cog',
     ))
     layers = _parse_layers(
         root,
         base_dir=base_dir,
-        user=user,
         workflow_modes=modes,
     )
     enabled_layer_modes = {mode for layer in layers for mode in layer.modes}
@@ -379,7 +498,6 @@ def load_review_config(path: Path) -> ReviewConfig:
         imagery_cog=imagery_cog,
         layers=layers,
         annotation_labels=_parse_labels(root, modes),
-        user=user,
         modes=modes,
-        todo_h3_indexes=_parse_todo(workflow),
+        reviewers=_parse_reviewers(workflow, layers),
     )

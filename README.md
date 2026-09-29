@@ -32,7 +32,8 @@ python src/build_cog.py path/to/imagery_dir
 Run the app against a migrated and bootstrapped database:
 
 ```bash
-python app.py --yaml project.yaml
+AUTH_MODE=development DEV_REVIEWER_ID=alice@example.com \
+  python app.py --yaml project.yaml
 ```
 
 The browser frontend is kept in `frontend/index.html`, `frontend/styles.css`,
@@ -74,9 +75,12 @@ preserve independent records for each reviewer.
 
 Each `layers[].source` must point to local or HTTP(S) GeoParquet.
 
-During development, API requests require an `X-Reviewer-ID` header. This mode
-is intentionally disabled when `AUTH_MODE` is anything other than
-`development`; production OIDC authentication will replace it.
+During development, browser requests use `DEV_REVIEWER_ID`; an explicit
+`X-Reviewer-ID` header overrides it for API and multi-user tests. In production,
+set `AUTH_MODE=cloudflare`, `CF_ACCESS_TEAM_DOMAIN`, and `CF_ACCESS_AUD`. The
+server validates Cloudflare Access's `Cf-Access-Jwt-Assertion` and uses its
+`email` claim as the reviewer ID. That identity must exactly match a reviewer
+ID in the project YAML.
 
 The initial API supports:
 
@@ -116,22 +120,24 @@ exporter-generated revision names, and explicitly protects configured local
 source files. These files are local staging outputs and do not update
 `export_state` until bucket publication is implemented.
 
-For an assigned project, pass its YAML file to the app:
+For an assigned project, pass its YAML file and development identity to the app:
 
 ```bash
-python app.py --yaml project.yaml
+AUTH_MODE=development DEV_REVIEWER_ID=alice@example.com \
+  python app.py --yaml project.yaml
 ```
 
 Relative paths in the YAML are resolved from the YAML file's directory. YAML
-is required; the former no-YAML Settings mode has been removed. The technician
-name is fixed by `workflow.user`, and only features inside the H3 cells listed
-under `workflow.todo` are loaded into the work queue. An empty TODO list makes
-every feature available.
+is required; the former no-YAML Settings mode has been removed. One shared app
+URL serves every reviewer. Authentication chooses a `workflow.reviewers[]`
+entry, and each assignment limits that reviewer by layer, mode, and H3 cell.
+An empty `h3_indexes` list assigns every COG-filtered feature for that layer
+and mode.
 
 A project configuration supplies only server-controlled runtime values:
 
 ```yaml
-version: 2
+version: 3
 
 project:
   id: 'example_fire'
@@ -172,9 +178,27 @@ annotation:
   labels: ['damaged', 'undamaged', 'unknown']
 
 workflow:
-  user: 'alice'
   modes: ['annotation', 'editing']
-  todo: []
+  reviewers:
+    - id: 'alice@example.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+          h3_indexes:
+            - '8828308281fffff'
+            - '8828308283fffff'
+        - layer: observations
+          modes: [annotation]
+          h3_indexes: []
+
+    # Assigning the same cell to multiple reviewers preserves independent
+    # annotation rows for each person.
+    - id: 'bob@example.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation]
+          h3_indexes:
+            - '8828308281fffff'
 ```
 
 Configured sources must be local or public/signed HTTP(S) GeoParquet objects.
@@ -200,8 +224,9 @@ hidden until an H3 cell is selected. Geometry changes are saved with optimistic
 version checking; only annotation saves automatically advance to the next
 feature.
 
-Open `http://127.0.0.1:8501` in a web browser. Project, imagery, labels,
-reviewer, modes, and assignments come from the YAML configuration.
+Open `http://127.0.0.1:8501` in a web browser. Project, imagery, labels, modes,
+and assignments come from the YAML configuration; the authenticated identity
+selects the reviewer entry.
 
 The imagery should appear as well as hexagonal grid cells. Grid cells only appear where features are present. The grid will change scale when you zoom. Zoom to the desired level and select a grid cell by clicking it. Use escape to exit a selected grid cell.
 

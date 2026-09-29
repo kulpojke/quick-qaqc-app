@@ -6,9 +6,6 @@ if (!configResponse.ok) {
 const {
   defaultAnnotationLabels,
   defaultCogPath,
-  configuredUser,
-  workflowModes,
-  todoH3Indexes,
   layers,
 } = await configResponse.json();
 
@@ -68,10 +65,6 @@ let draftFeatureLayer = null;
 const annotationLabels = defaultAnnotationLabels;
 const cogPath = defaultCogPath;
 const confidenceFilter = 0;
-const todoAssignments = todoH3Indexes.map((index) => ({
-  index: String(index),
-  resolution: h3.getResolution ? h3.getResolution(index) : h3.h3GetResolution(index),
-}));
 const confidenceFilters = [
   { value: 'all', maxRank: Infinity },
   { value: 'very_low', maxRank: 0 },
@@ -82,12 +75,11 @@ const confidenceFilters = [
 const layerStates = new Map(layers.map((layer) => [layer.id, { visible: true }]));
 
 function layerSupportsAnnotation(layer) {
-  return workflowModes.includes('annotation') && layer.modes.includes('annotation');
+  return layer.modes.includes('annotation');
 }
 
 function layerSupportsPointEditing(layer) {
   return Boolean(
-    workflowModes.includes('editing') &&
     layer.modes.includes('editing') &&
     layer.geometryTypes.some((type) => ['Point', 'MultiPoint'].includes(type)) &&
     layer.editing &&
@@ -97,7 +89,6 @@ function layerSupportsPointEditing(layer) {
 
 function layerSupportsPolygonEditing(layer) {
   return Boolean(
-    workflowModes.includes('editing') &&
     layer.modes.includes('editing') &&
     layer.geometryTypes.some((type) => ['Polygon', 'MultiPolygon'].includes(type)) &&
     layer.editing &&
@@ -344,13 +335,33 @@ function featurePassesConfidenceFilter(feature) {
   return category ? category.rank <= filter.maxRank : false;
 }
 
-function featureIsAssigned(feature) {
-  if (!todoAssignments.length) {
+// *!*! Browser tools map to database tasks before applying reviewer cell limits.
+function taskModeForTool(mode = activeTool.mode) {
+  return mode === 'annotation' ? 'annotation' : 'editing';
+}
+
+function featureMatchesAssignment(feature, indexes) {
+  if (!indexes.length) {
     return true;
   }
-  return todoAssignments.some((assignment) => (
-    String((feature.h3 || {})[String(assignment.resolution)] || '') === assignment.index
-  ));
+  return indexes.some((index) => {
+    const resolution = h3.getResolution
+      ? h3.getResolution(index)
+      : h3.h3GetResolution(index);
+    return String((feature.h3 || {})[String(resolution)] || '') === String(index);
+  });
+}
+
+function featureIsAssigned(feature, mode = null) {
+  const layer = layerDefinition(feature);
+  if (!layer) {
+    return false;
+  }
+  const modes = mode ? [mode] : layer.modes;
+  return modes.some((candidateMode) => {
+    const indexes = layer.assignments[candidateMode];
+    return Array.isArray(indexes) && featureMatchesAssignment(feature, indexes);
+  });
 }
 
 // *!*! Build reusable indexes once instead of rescanning every feature for every H3 cell.
@@ -374,21 +385,24 @@ function indexFeatures() {
 
 function activeFeatures() {
   return (featuresByLayer.get(activeTool.layerId) || []).filter((feature) => (
-    featureIsAssigned(feature) && featurePassesConfidenceFilter(feature)
+    featureIsAssigned(feature, taskModeForTool()) && featurePassesConfidenceFilter(feature)
   ));
 }
 
 function featuresInActiveCell(cell, resolution) {
   const indexed = featuresByH3.get(h3IndexKey(activeTool.layerId, resolution, cell)) || [];
   return indexed.filter((feature) => (
-    featureIsAssigned(feature) && featurePassesConfidenceFilter(feature)
+    featureIsAssigned(feature, taskModeForTool()) && featurePassesConfidenceFilter(feature)
   ));
 }
 
 function visibleFeaturesForLayer(layer) {
   const source = featuresByLayer.get(layer.id) || [];
+  const assignmentMode = layer.id === activeTool.layerId
+    ? taskModeForTool()
+    : null;
   return source.filter((feature) => {
-    if (!featureIsAssigned(feature)) {
+    if (!featureIsAssigned(feature, assignmentMode)) {
       return false;
     }
     if (!featureIsPoint(feature)) {
@@ -1101,7 +1115,7 @@ function renderFeatureLayers(fitToFeatures, preserveCell = false) {
 }
 
 async function loadAnnotations() {
-  if (!workflowModes.includes('annotation')) {
+  if (!layers.some((layer) => layer.modes.includes('annotation'))) {
     annotations = {};
     return;
   }
@@ -1231,7 +1245,6 @@ async function saveAnnotation() {
     qa_status: 'annotated',
     qa_correct_class: selectedCorrectLabel,
     qa_notes: qaNotes.value,
-    reviewer: configuredUser,
     feature_version_seen: selectedFeature.version,
   };
   const response = await fetch('/api/annotations?mode=annotation', {

@@ -15,7 +15,7 @@ reads, and concurrent API updates.
 | `export.py` | Streams current feature layers and multi-reviewer annotations through DuckDB into revisioned local snapshots |
 | `feature_store.py` | Returns compact assigned features and applies browser point/polygon edits with optimistic version checking |
 | `review_store.py` | Reads and writes reviewer annotations with task, assignment, and feature-version checks |
-| `auth.py` | Derives development reviewer identity from `X-Reviewer-ID` and fails closed for unimplemented production authentication |
+| `auth.py` | Resolves development identities and validates Cloudflare Access JWTs for production reviewers |
 | `models.py` | Defines and validates annotation and feature-edit request bodies |
 | `main.py` | Creates the FastAPI application and implements health, feature, annotation, and editing endpoints |
 
@@ -47,8 +47,14 @@ bootstrap.py <---- project_config.py <---- camp_config.yaml
 
 The import and its ledger row are committed in one transaction. Later starts
 with the same sources and COG bounds synchronize task assignments but do not
-replace feature rows. A changed source, bounds, or inconsistent feature count
-stops startup so database edits cannot be silently overwritten.
+replace feature rows. Changed source identity or bounds stop startup so
+database edits cannot be silently overwritten.
+
+Configuration version 3 lists multiple reviewers. Bootstrap applies each
+layer/mode/H3 assignment to the existing task tables. Before repopulating a
+managed task it clears H3 cells and changes old reviewer rows to
+`all_features = false`; this revokes stale access while preserving annotations
+that retain a foreign key to those reviewer rows.
 
 ## Read And Write Paths
 

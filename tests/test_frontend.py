@@ -5,10 +5,46 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app import FRONTEND_DIR, QaqcStore, browser_url, make_handler
+from src.project_config import ReviewerAssignmentConfig, ReviewerConfig
 
 
 class FrontendTests(unittest.TestCase):
     '''*!*! Verify static frontend files and their Python server boundary.'''
+
+    def review_config(self, layers=(), modes=('annotation',)):
+        '''*!*! Build a reviewer-aware runtime configuration for handler tests.'''
+
+        assignments = tuple(
+            ReviewerAssignmentConfig(
+                layer_id=layer.id,
+                modes=tuple(mode for mode in layer.modes if mode in modes),
+                h3_indexes=(),
+            )
+            for layer in layers
+        )
+        reviewer = ReviewerConfig(id='alice', assignments=assignments)
+        config = SimpleNamespace(
+            project_id='project-one',
+            annotation_labels=('damaged', 'undamaged'),
+            imagery_cog='',
+            project_name='Test project',
+            modes=modes,
+            reviewers=(reviewer,),
+            layers=layers,
+        )
+        config.reviewer = lambda reviewer_id: (
+            reviewer if reviewer_id == reviewer.id else None
+        )
+        return config
+
+    def handler_class(self, store, config):
+        '''*!*! Bind a test store to one authenticated reviewer.'''
+
+        return make_handler(
+            config,
+            store_factory=lambda project_id, reviewer_id: store,
+            identity_resolver=lambda headers, **kwargs: 'alice',
+        )
 
     def test_browser_url_uses_localhost_for_local_bindings(self):
         '''*!*! Startup URLs remain clickable when binding locally or in Docker.'''
@@ -62,7 +98,9 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn('Select an H3 cell', html)
         self.assertNotIn('id="reviewer"', html)
         self.assertNotIn('reviewerInput', javascript)
-        self.assertIn('reviewer: configuredUser', javascript)
+        self.assertNotIn('configuredUser', javascript)
+        self.assertIn('layer.assignments[candidateMode]', javascript)
+        self.assertIn('featureIsAssigned(feature, assignmentMode)', javascript)
         self.assertNotIn("getElementById('project-name')", javascript)
 
     def test_handler_serves_frontend_assets_and_runtime_config(self):
@@ -72,13 +110,7 @@ class FrontendTests(unittest.TestCase):
         store.read_buildings = Mock(
             return_value={'type': 'FeatureCollection', 'features': []},
         )
-        config = SimpleNamespace(
-            annotation_labels=('damaged', 'undamaged'),
-            imagery_cog='',
-            project_name='Test project',
-            user='alice',
-            modes=('annotation',),
-            todo_h3_indexes=(),
+        config = self.review_config(
             layers=(
                 SimpleNamespace(
                     id='buildings',
@@ -97,13 +129,15 @@ class FrontendTests(unittest.TestCase):
                     ),
                 ),
             ),
+            modes=('annotation',),
         )
-        handler_class = make_handler(store, config)
+        handler_class = self.handler_class(store, config)
         handler = handler_class.__new__(handler_class)
         handler.send_response = Mock()
         handler.send_header = Mock()
         handler.end_headers = Mock()
         handler.wfile = BytesIO()
+        handler.headers = {}
 
         # *!*! Exercise route dispatch without requiring a sandboxed network socket.
         handler.path = '/static/app.js'
@@ -122,13 +156,14 @@ class FrontendTests(unittest.TestCase):
 
         self.assertNotIn('defaultBuildingsPath', config)
         self.assertEqual(config['configuredProjectName'], 'Test project')
-        self.assertEqual(config['workflowModes'], ['annotation'])
+        self.assertNotIn('workflowModes', config)
         self.assertEqual(config['layers'][0]['id'], 'buildings')
+        self.assertEqual(config['layers'][0]['assignments'], {'annotation': []})
 
         handler.wfile = BytesIO()
         handler.path = '/api/buildings'
         handler.do_GET()
-        self.assertEqual(store.read_buildings.call_count, 2)
+        self.assertEqual(store.read_buildings.call_count, 1)
 
     def test_handler_accepts_point_move_requests(self):
         '''*!*! Browser point moves are delegated to the database feature store.'''
@@ -146,16 +181,8 @@ class FrontendTests(unittest.TestCase):
             'version': 2,
             'h3': {},
         })
-        config = SimpleNamespace(
-            annotation_labels=('damaged',),
-            imagery_cog='',
-            project_name='Test project',
-            user='alice',
-            modes=('annotation', 'editing'),
-            todo_h3_indexes=(),
-            layers=(),
-        )
-        handler_class = make_handler(store, config)
+        config = self.review_config(modes=('annotation', 'editing'))
+        handler_class = self.handler_class(store, config)
         handler = handler_class.__new__(handler_class)
         payload = json.dumps({
             'id': 'point-one',
@@ -177,6 +204,76 @@ class FrontendTests(unittest.TestCase):
         store.update_geometry.assert_called_once()
         response = json.loads(handler.wfile.getvalue())
         self.assertEqual(response['version'], 2)
+
+    def test_handler_scopes_runtime_config_to_authenticated_reviewer(self):
+        '''*!*! One shared URL exposes only the requester's assigned tools.'''
+
+        layer = SimpleNamespace(
+            id='buildings',
+            name='Buildings',
+            geometry_types=('Polygon',),
+            modes=('annotation', 'editing'),
+            feature_id_field='id',
+            predicted_class_field='',
+            confidence_field='',
+            display_fields=(),
+            editing=SimpleNamespace(
+                move=True,
+                reshape=False,
+                create=False,
+                delete=False,
+            ),
+        )
+        alice = ReviewerConfig(
+            id='alice',
+            assignments=(ReviewerAssignmentConfig(
+                layer_id='buildings',
+                modes=('annotation',),
+                h3_indexes=('8828308281fffff',),
+            ),),
+        )
+        bob = ReviewerConfig(
+            id='bob',
+            assignments=(ReviewerAssignmentConfig(
+                layer_id='buildings',
+                modes=('editing',),
+                h3_indexes=(),
+            ),),
+        )
+        config = SimpleNamespace(
+            project_id='project-one',
+            annotation_labels=('damaged',),
+            imagery_cog='',
+            project_name='Test project',
+            modes=('annotation', 'editing'),
+            reviewers=(alice, bob),
+            layers=(layer,),
+        )
+        config.reviewer = lambda reviewer_id: {
+            'alice': alice,
+            'bob': bob,
+        }.get(reviewer_id)
+        store = QaqcStore('project-one', 'bob')
+        store_factory = Mock(return_value=store)
+        handler_class = make_handler(
+            config,
+            store_factory=store_factory,
+            identity_resolver=lambda headers, **kwargs: 'bob',
+        )
+        handler = handler_class.__new__(handler_class)
+        handler.path = '/api/config'
+        handler.headers = {}
+        handler.wfile = BytesIO()
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+
+        handler.do_GET()
+
+        runtime = json.loads(handler.wfile.getvalue())
+        self.assertEqual(runtime['layers'][0]['modes'], ['editing'])
+        self.assertEqual(runtime['layers'][0]['assignments'], {'editing': []})
+        store_factory.assert_called_once_with('project-one', 'bob')
 
     def test_handler_accepts_polygon_create_and_delete_requests(self):
         '''*!*! Browser drawing and deletion delegate to the feature store.'''
@@ -200,16 +297,8 @@ class FrontendTests(unittest.TestCase):
             'layer_id': 'buildings',
             'version': 2,
         })
-        config = SimpleNamespace(
-            annotation_labels=('damaged',),
-            imagery_cog='',
-            project_name='Test project',
-            user='alice',
-            modes=('editing',),
-            todo_h3_indexes=(),
-            layers=(),
-        )
-        handler_class = make_handler(store, config)
+        config = self.review_config(modes=('editing',))
+        handler_class = self.handler_class(store, config)
 
         create_payload = json.dumps({
             'layer_id': 'buildings',

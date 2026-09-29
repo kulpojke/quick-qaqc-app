@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from src.api.auth import AuthenticationError, resolve_reviewer_identity
 from src.api.feature_store import (
     FeatureStoreError,
     create_project_polygon,
@@ -24,7 +25,12 @@ from src.api.review_store import (
     read_reviewer_annotations,
     write_reviewer_annotation,
 )
-from src.project_config import ConfigError, ReviewConfig, load_review_config
+from src.project_config import (
+    ConfigError,
+    ReviewConfig,
+    ReviewerConfig,
+    load_review_config,
+)
 
 
 TILE_SIZE = 256
@@ -198,13 +204,26 @@ class QaqcStore:
 
 
 def make_handler(
-    store: QaqcStore,
     review_config: ReviewConfig,
+    store_factory=QaqcStore,
+    identity_resolver=resolve_reviewer_identity,
 ):
-    '''*!*! Build an HTTP handler bound to one database-backed project.'''
+    '''*!*! Build a request-authenticated handler for one review project.'''
 
-    # *!*! Fail startup early when the configured project cannot be read.
-    store.read_buildings()
+    stores = {}
+    development_default = (
+        review_config.reviewers[0].id
+        if len(review_config.reviewers) == 1
+        else ''
+    )
+
+    def store_for(reviewer_id: str) -> QaqcStore:
+        '''*!*! Reuse one stateless database facade per configured reviewer.'''
+
+        if reviewer_id not in stores:
+            stores[reviewer_id] = store_factory(review_config.project_id, reviewer_id)
+        return stores[reviewer_id]
+
     class Handler(BaseHTTPRequestHandler):
         def handle_one_request(self) -> None:
             try:
@@ -212,22 +231,54 @@ def make_handler(
             except (BrokenPipeError, ConnectionResetError):
                 return
 
-        def frontend_config(self) -> dict[str, object]:
-            '''*!*! Return browser runtime values without templating static files.'''
+        def reviewer_context(self) -> tuple[ReviewerConfig, QaqcStore] | None:
+            '''*!*! Authenticate and authorize the current configured reviewer.'''
+
+            try:
+                reviewer_id = identity_resolver(
+                    self.headers,
+                    default_development_reviewer=development_default,
+                )
+            except AuthenticationError as error:
+                self.send_text(str(error), HTTPStatus(error.status))
+                return None
+            reviewer = review_config.reviewer(reviewer_id)
+            if reviewer is None:
+                self.send_text(
+                    'Authenticated user is not assigned to this project',
+                    HTTPStatus.FORBIDDEN,
+                )
+                return None
+            return reviewer, store_for(reviewer.id)
+
+        def frontend_config(self, reviewer: ReviewerConfig) -> dict[str, object]:
+            '''*!*! Return reviewer-scoped browser runtime configuration.'''
+
+            assigned_layer_ids = {
+                assignment.layer_id for assignment in reviewer.assignments
+            }
 
             return {
                 'defaultAnnotationLabels': ','.join(review_config.annotation_labels),
                 'defaultCogPath': review_config.imagery_cog,
                 'configuredProjectName': review_config.project_name,
-                'configuredUser': review_config.user,
-                'workflowModes': list(review_config.modes),
-                'todoH3Indexes': list(review_config.todo_h3_indexes),
                 'layers': [
                     {
                         'id': layer.id,
                         'name': layer.name,
                         'geometryTypes': list(layer.geometry_types),
-                        'modes': list(layer.modes),
+                        'modes': [
+                            mode
+                            for mode in layer.modes
+                            if reviewer.assignment_for(layer.id, mode) is not None
+                        ],
+                        'assignments': {
+                            mode: list(
+                                reviewer.assignment_for(layer.id, mode).h3_indexes
+                            )
+                            for mode in layer.modes
+                            if reviewer.assignment_for(layer.id, mode) is not None
+                        },
                         'fields': {
                             'featureId': layer.feature_id_field,
                             'predictedClass': layer.predicted_class_field,
@@ -237,18 +288,19 @@ def make_handler(
                         'editing': vars(layer.editing),
                     }
                     for layer in review_config.layers
+                    if layer.id in assigned_layer_ids
                 ],
             }
 
         def requested_cog_source(self) -> CogSource | None:
             return parse_cog_source(review_config.imagery_cog)
 
-        def requested_review_mode(self) -> str | None:
+        def requested_review_mode(self, reviewer: ReviewerConfig) -> str | None:
             '''*!*! Return an enabled database review mode from the request.'''
 
             query = parse_qs(urlparse(self.path).query)
             mode = query.get('mode', ['annotation'])[0].strip().lower()
-            if mode != 'annotation' or mode not in review_config.modes:
+            if mode != 'annotation' or mode not in reviewer.modes:
                 return None
             return mode
 
@@ -322,8 +374,13 @@ def make_handler(
                 self.send_frontend_file(path)
                 return
 
+            context = self.reviewer_context()
+            if context is None:
+                return
+            reviewer, store = context
+
             if path == '/api/config':
-                self.send_json(self.frontend_config())
+                self.send_json(self.frontend_config(reviewer))
                 return
 
             if path == "/api/buildings":
@@ -334,7 +391,7 @@ def make_handler(
                 return
 
             if path == "/api/annotations":
-                mode = self.requested_review_mode()
+                mode = self.requested_review_mode(reviewer)
                 if mode is None:
                     self.send_text('Workflow mode is not enabled', HTTPStatus.BAD_REQUEST)
                     return
@@ -377,6 +434,11 @@ def make_handler(
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
+            context = self.reviewer_context()
+            if context is None:
+                return
+            reviewer, store = context
+
             if path == '/api/features':
                 content_length = int(self.headers.get('Content-Length', '0'))
                 try:
@@ -396,7 +458,7 @@ def make_handler(
                 self.send_text("Not found", HTTPStatus.NOT_FOUND)
                 return
 
-            mode = self.requested_review_mode()
+            mode = self.requested_review_mode(reviewer)
             if mode is None:
                 self.send_text('Workflow mode is not enabled', HTTPStatus.BAD_REQUEST)
                 return
@@ -427,6 +489,10 @@ def make_handler(
             if path != '/api/features':
                 self.send_text('Not found', HTTPStatus.NOT_FOUND)
                 return
+            context = self.reviewer_context()
+            if context is None:
+                return
+            _, store = context
 
             content_length = int(self.headers.get('Content-Length', '0'))
             try:
@@ -452,6 +518,10 @@ def make_handler(
             if path != '/api/features':
                 self.send_text('Not found', HTTPStatus.NOT_FOUND)
                 return
+            context = self.reviewer_context()
+            if context is None:
+                return
+            _, store = context
             content_length = int(self.headers.get('Content-Length', '0'))
             try:
                 payload = json.loads(self.rfile.read(content_length) or b'{}')
@@ -515,12 +585,8 @@ def main() -> None:
     if not os.environ.get('DATABASE_URL'):
         raise SystemExit('DATABASE_URL is required')
 
-    store = QaqcStore(
-        review_config.project_id,
-        review_config.user,
-    )
     try:
-        handler = make_handler(store, review_config)
+        handler = make_handler(review_config)
     except (OSError, RuntimeError, ValueError) as error:
         raise SystemExit(f'Could not load project features: {error}') from error
     server = ThreadingHTTPServer((args.host, args.port), handler)
@@ -529,10 +595,9 @@ def main() -> None:
     modes_text = ', '.join(review_config.modes)
     print(f'Configuration: {review_config.source_path}')
     print(f'Project: {review_config.project_name}')
-    print(f'User: {review_config.user}')
+    print(f'Reviewers: {len(review_config.reviewers):,}')
     print(f'Modes: {modes_text}')
     print(f'Layers: {len(review_config.layers):,}')
-    print(f'Assigned H3 cells per layer: {len(review_config.todo_h3_indexes):,}')
     print(f'Features and reviews: PostGIS project {review_config.project_id}')
     server.serve_forever()
 

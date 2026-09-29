@@ -1,5 +1,5 @@
 # Resolve relative paths from the directory containing this YAML file.
-version: 2
+version: 3
 
 project:
   id: camp_fire_qaqc
@@ -64,8 +64,36 @@ annotation:
     - unknown
 
 workflow:
-  user: Pazazu
   modes:
     - annotation
     - editing
-  todo: []
+  reviewers:
+    - id: Pazazu
+      assignments:
+        # *!*! An empty H3 list assigns every COG-filtered feature for that
+        # *!*! layer. Add indexes here when dividing work among reviewers.
+        - layer: features
+          modes:
+            - annotation
+            - editing
+          h3_indexes: []
+        - layer: dins
+          modes:
+            - annotation
+            - editing
+          h3_indexes: []
+
+    # *!*! Temporary limited account for exercising shared-URL identity and
+    # *!*! assignment filtering during development.
+    - id: TestReviewer
+      assignments:
+        - layer: features
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+        - layer: dins
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
