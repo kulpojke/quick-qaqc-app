@@ -68,7 +68,7 @@ workflow:
     - annotation
     - editing
   reviewers:
-    - id: Pazazu
+    - id: 'michaelhuggins@protonmail.com'
       assignments:
         # *!*! An empty H3 list assigns every COG-filtered feature for that
         # *!*! layer. Add indexes here when dividing work among reviewers.
@@ -83,9 +83,48 @@ workflow:
             - editing
           h3_indexes: []
 
-    # *!*! Temporary limited account for exercising shared-URL identity and
-    # *!*! assignment filtering during development.
-    - id: TestReviewer
+    # *!*! Annotation-only reviewers, limited to one H3 cell for now.
+    # *!*! Widen or split their h3_indexes when dividing real work.
+    - id: 'geoff.fricker@gmail.com'
+      assignments:
+        - layer: features
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+        - layer: dins
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+
+    - id: 'avaromano123@gmail.com'
+      assignments:
+        - layer: features
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+        - layer: dins
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+
+    - id: 'jessalencaster@gmail.com'
+      assignments:
+        - layer: features
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+        - layer: dins
+          modes:
+            - annotation
+          h3_indexes:
+            - 882814a201fffff
+
+    - id: 'jonathan.d.ventura@gmail.com'
       assignments:
         - layer: features
           modes:
