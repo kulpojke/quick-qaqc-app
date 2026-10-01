@@ -116,6 +116,12 @@ feature reference, represented in both outputs as `_dm_project_id`,
 feature files. Local staging does not update `export_state`; that record is
 reserved for the later bucket-publish step.
 
+Compose passes the same required `PROJECT_CONFIG` to the app, bootstrap, and
+export worker beneath the read-only `/project` mount. `PROJECT_CONFIG_DIR`
+selects the host directory containing the YAML and its relative local inputs.
+The worker explicitly uses `--output-dir /app/tmp`, keeping staging on the
+existing writable `tmp/` bind mount regardless of the configuration directory.
+
 After a complete export batch validates, the worker retains the newest two
 generated revisions for each changed stream and deletes older generated files.
 The filename matcher is project-and-stream specific, and configured local

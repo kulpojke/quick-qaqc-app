@@ -28,7 +28,7 @@ services:
       - --port
       - '8501'
       - --yaml
-      - camp_config.yaml
+      - /project/${PROJECT_CONFIG:?Set PROJECT_CONFIG to a YAML path relative to PROJECT_CONFIG_DIR}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -49,7 +49,7 @@ services:
       - 127.0.0.1:${APP_PORT:-8501}:8501
     restart: unless-stopped
     volumes:
-      - ./camp_config.yaml:/app/camp_config.yaml:ro
+      - ${PROJECT_CONFIG_DIR:-.}:/project:ro
       - ./data:/app/data
 
   api:
@@ -106,7 +106,7 @@ services:
       - -m
       - src.api.bootstrap
       - --yaml
-      - camp_config.yaml
+      - /project/${PROJECT_CONFIG:?Set PROJECT_CONFIG to a YAML path relative to PROJECT_CONFIG_DIR}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -114,7 +114,7 @@ services:
       <<: *database-environment
     restart: 'no'
     volumes:
-      - ./camp_config.yaml:/app/camp_config.yaml:ro
+      - ${PROJECT_CONFIG_DIR:-.}:/project:ro
       - ./data:/app/data
 
   # *!*! Keep host-visible feature and annotation snapshots current.
@@ -125,8 +125,10 @@ services:
       - -m
       - src.api.export
       - --yaml
-      - camp_config.yaml
+      - /project/${PROJECT_CONFIG:?Set PROJECT_CONFIG to a YAML path relative to PROJECT_CONFIG_DIR}
       - --watch
+      - --output-dir
+      - /app/tmp
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -139,7 +141,7 @@ services:
     init: true
     restart: unless-stopped
     volumes:
-      - ./camp_config.yaml:/app/camp_config.yaml:ro
+      - ${PROJECT_CONFIG_DIR:-.}:/project:ro
       - ./tmp:/app/tmp
 
   # *!*! Print host-facing links only after both browser-facing services are healthy.

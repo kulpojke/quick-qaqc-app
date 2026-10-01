@@ -49,9 +49,67 @@ PostGIS database:
 
 ```bash
 cp .env.example .env
-docker compose build
-docker compose up -d
+# Set database credentials and authentication in .env before starting.
+./run.sh camp_config.yaml
 ```
+
+To update an existing deployment after pulling changes:
+
+```bash
+git pull --ff-only
+./run.sh camp_config.yaml
+```
+
+`run.sh` accepts one YAML path, relative to your current directory or absolute.
+It sets the Compose variables for that invocation without editing `.env`,
+builds the shared image using Docker's cache, validates the YAML, starts or
+reuses PostGIS, applies migrations, and synchronizes reviewer assignments.
+It then recreates the app/API/export containers and waits for health checks.
+The database container is reused, its named volume is retained, local exports
+remain in `tmp/`, and the separate cloudflared service is unaffected. The app
+may be briefly unavailable during replacement. A failed prerequisite stops
+the script before application replacement; this is not an automatic rollback
+of any migrations or bootstrap changes already applied.
+
+For YAML inside the checkout, the script mounts the repository directory so
+relative sibling data paths work. For external YAML, it mounts the YAML's
+parent directory; keep local inputs beneath that directory. It always uses
+this checkout's `.env` and `compose.yaml`. Use the same Compose project name
+as the existing deployment (default `damagemap-qaqc`) to reuse its volume.
+
+Set `PROJECT_CONFIG` in `.env` to the project YAML, or pass it when invoking
+Compose directly instead of using the script:
+
+```bash
+PROJECT_CONFIG=camp_config.yaml docker compose up -d
+```
+
+Compose requires this parameter; it has no hardcoded project YAML. The app,
+bootstrap, and export worker all receive the same selection. `PROJECT_CONFIG`
+is relative to `PROJECT_CONFIG_DIR` (defaults to the repository directory),
+which is mounted read-only at `/project`. Relative source and imagery paths
+inside the YAML still resolve from its own directory. Keep referenced local
+files within that mounted directory tree, or use HTTP(S) sources. For a project
+stored outside the repository:
+
+```bash
+PROJECT_CONFIG_DIR=/opt/review-projects PROJECT_CONFIG=camp/project.yaml \
+  docker compose up -d
+```
+
+Persist these values in the server `.env` so subsequent Compose commands use
+the same project. Give each distinct project its own stable `project.id` in
+YAML. This selects one project per running UI; it does not start multiple UIs.
+After changing the selection or reviewer assignments, synchronize the database
+and recreate the services:
+
+```bash
+docker compose run --rm bootstrap
+docker compose up -d --no-deps --force-recreate app api export
+```
+
+No image rebuild is needed for a YAML-only change. Exports continue to use the
+repository's `tmp/` mount, independent of the selected YAML directory.
 
 Open `http://127.0.0.1:8501`. The app binds only to localhost by default, as
 does PostGIS on port `5432`. Stop the stack with `docker compose down`; the
