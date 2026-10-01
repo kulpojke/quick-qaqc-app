@@ -1,4 +1,4 @@
-'''*!*! Export current PostGIS feature layers as local GeoParquet snapshots.'''
+'''*!*! Stage current PostGIS snapshots and publish configured R2 exports.'''
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from src.api.bootstrap import (
     quote_string,
 )
 from src.api.database import database_url
+from src.api.r2_export import publish_batch
 from src.geojson2parquet import geometry_column
 from src.project_config import LayerConfig, ReviewConfig, load_review_config
 
@@ -689,7 +690,12 @@ def export_project(
                     path=output_path,
                 ))
 
-    # *!*! Prune only after every selected stream has been written and checked.
+    # *!*! R2 failures propagate before local retention or watch state advances.
+    # *!*! Compose restarts a failed worker, which retries a complete snapshot.
+    if config.exports is not None:
+        publish_batch(config, tuple(results), keep_revisions=keep_revisions)
+
+    # *!*! Prune only after every selected stream has been written and published.
     # *!*! Configured local sources remain protected even if unusually named
     # *!*! like an exporter-generated revision in the same directory.
     protected_sources = {
@@ -831,7 +837,7 @@ def build_parser() -> argparse.ArgumentParser:
     '''*!*! Build command-line options for local layer export.'''
 
     parser = argparse.ArgumentParser(
-        description='Export current PostGIS layers to local GeoParquet snapshots.',
+        description='Export PostGIS snapshots and publish to the R2 destination in YAML.',
     )
     parser.add_argument(
         '--yaml',

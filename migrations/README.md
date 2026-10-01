@@ -211,8 +211,11 @@ An exporter can check:
 projects.revision > export_state.exported_revision
 ```
 
-When true, PostGIS contains changes that have not yet been written to a
-GeoParquet snapshot.
+This is a conservative project-wide signal; an annotation-only edit can raise
+the project revision without changing a layer's features. The worker uses
+per-stream change tokens to avoid unnecessary feature rewrites. R2 publication
+advances these rows only after the uploaded snapshots and manifest verify.
+Current annotation exports are tracked in that manifest, not this layer table.
 
 ## Deletion Behavior
 
@@ -250,8 +253,9 @@ The migrations create database structure only. They do not:
 `src/api/bootstrap.py` performs the first two operations at container startup.
 The API handles current reads and writes, while `src/api/export.py` performs
 automatic local snapshots after five minutes or 50 feature or annotation
-edits. Bucket publication and production authentication remain separate
-future work.
+edits. When YAML specifies `exports`, `src/api/r2_export.py` publishes verified
+objects and a current manifest to R2 before recording feature publication here.
+Production authentication uses Cloudflare Access JWT validation.
 
 Local export retention keeps two generated revisions per stream by default.
 Cleanup occurs only after replacement files validate and never targets the

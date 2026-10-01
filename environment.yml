@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
+  - boto3>=1.36
   - duckdb=1.5.5
   - fastapi
   - gdal

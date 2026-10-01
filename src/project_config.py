@@ -95,6 +95,15 @@ class ReviewerConfig:
 
 
 @dataclass(frozen=True)
+class ExportConfig:
+    '''*!*! Describe a project's R2 destination without storing credentials.'''
+
+    bucket: str
+    endpoint_url: str
+    prefix: str = 'exports'
+
+
+@dataclass(frozen=True)
 class ReviewConfig:
     '''*!*! Validated settings loaded from one project YAML file.'''
 
@@ -106,6 +115,7 @@ class ReviewConfig:
     annotation_labels: tuple[str, ...]
     modes: tuple[str, ...]
     reviewers: tuple[ReviewerConfig, ...]
+    exports: ExportConfig | None = None
 
     def reviewer(self, reviewer_id: str) -> ReviewerConfig | None:
         '''*!*! Return one configured reviewer by authenticated identity.'''
@@ -335,6 +345,8 @@ def _parse_layers(
         if not isinstance(value, dict):
             raise ConfigError(f'layers[{position}] must be a mapping')
         layer_id = _required_string(value, 'id', f'layers[{position}]')
+        if layer_id == 'annotations':
+            raise ConfigError('Layer id annotations is reserved for annotation exports')
         if not LAYER_ID_PATTERN.fullmatch(layer_id):
             raise ConfigError(
                 f'layers[{position}].id must contain only letters, numbers, _ or -'
@@ -447,6 +459,33 @@ def _parse_reviewers(
     return tuple(reviewers)
 
 
+def _parse_exports(root: dict) -> ExportConfig | None:
+    '''*!*! Validate an optional R2 destination; reject secrets and mistyped fields.'''
+
+    if 'exports' not in root:
+        return None
+    exports = _mapping(root, 'exports')
+    unknown = set(exports) - {'bucket', 'endpoint_url', 'prefix'}
+    if unknown:
+        raise ConfigError(f'Unknown exports field(s): {", ".join(sorted(unknown))}')
+    bucket = _required_string(exports, 'bucket', 'exports')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', bucket):
+        raise ConfigError('exports.bucket must be an R2 bucket name, not a URL')
+    endpoint = _required_string(exports, 'endpoint_url', 'exports').rstrip('/')
+    if not re.fullmatch(
+        r'https://[a-f0-9]{32}(?:\.(?:eu|us|fedramp))?\.r2\.cloudflarestorage\.com',
+        endpoint,
+    ):
+        raise ConfigError('exports.endpoint_url must be an HTTPS R2 S3 API endpoint')
+    prefix = _optional_string(exports, 'prefix', 'exports').strip('/')
+    if not prefix or any(
+        not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9._-]*', part)
+        for part in prefix.split('/')
+    ):
+        raise ConfigError('exports.prefix must be a non-empty object prefix without dot segments')
+    return ExportConfig(bucket=bucket, endpoint_url=endpoint, prefix=prefix)
+
+
 def load_review_config(path: Path) -> ReviewConfig:
     '''*!*! Load and validate a layer-aware project configuration.'''
 
@@ -500,4 +539,5 @@ def load_review_config(path: Path) -> ReviewConfig:
         annotation_labels=_parse_labels(root, modes),
         modes=modes,
         reviewers=_parse_reviewers(workflow, layers),
+        exports=_parse_exports(root),
     )

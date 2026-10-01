@@ -41,8 +41,8 @@ printf 'Updating project from %s\n' "$project_yaml"
 
 # *!*! Build and validate before changing running services. Docker reuses its cache.
 "${compose[@]}" build app
-"${compose[@]}" run --rm --no-deps --entrypoint python app -c \
-    'import sys; from src.project_config import load_review_config; load_review_config(sys.argv[1])' \
+"${compose[@]}" run --rm --no-deps --entrypoint python export -c \
+    'import sys; from pathlib import Path; from src.project_config import load_review_config; from src.api.r2_export import check_destination; check_destination(load_review_config(Path(sys.argv[1])))' \
     "/project/$PROJECT_CONFIG"
 
 # *!*! Reuse an existing database container and volume; never run down or prune.

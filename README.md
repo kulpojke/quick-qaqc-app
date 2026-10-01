@@ -62,7 +62,8 @@ git pull --ff-only
 
 `run.sh` accepts one YAML path, relative to your current directory or absolute.
 It sets the Compose variables for that invocation without editing `.env`,
-builds the shared image using Docker's cache, validates the YAML, starts or
+builds the shared image using Docker's cache, validates the YAML and configured
+R2 bucket access, starts or
 reuses PostGIS, applies migrations, and synchronizes reviewer assignments.
 It then recreates the app/API/export containers and waits for health checks.
 The database container is reused, its named volume is retained, local exports
@@ -175,8 +176,70 @@ in `.env` tune the worker. `EXPORT_REVISIONS_TO_KEEP` defaults to `2`, retaining
 the current generated snapshot plus one rollback revision for each stream.
 Cleanup runs only after a complete new batch validates, matches only
 exporter-generated revision names, and explicitly protects configured local
-source files. These files are local staging outputs and do not update
-`export_state` until bucket publication is implemented.
+source files. When R2 is configured, publication must succeed before local
+retention runs or the worker marks changes as exported.
+
+### R2 export destination
+
+Set the destination in each project's YAML. Camp uses the same `parquets`
+bucket as its input GeoParquet, under a separate generated-object prefix:
+
+```yaml
+exports:
+  bucket: parquets
+  endpoint_url: https://ed9a058640a1241556bd4d897f168856.r2.cloudflarestorage.com
+  prefix: exports
+```
+
+The endpoint is the bucket's **S3 API endpoint without the bucket path**.
+Omit `exports` entirely for local-only development; an incomplete section is
+an error. Credentials never belong in YAML. Create an R2 S3 access key with
+**Object Read & Write** permission for the destination bucket, then set these
+in the server `.env`:
+
+```dotenv
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+```
+
+Compose passes these credentials only to the export worker. Run
+`./run.sh camp_config.yaml` after pulling the code; the image rebuild installs
+the new boto3 dependency. Preflight checks credentials and bucket access before
+replacing the app services; actual uploads also require write permissions.
+Cloudflare documents the credentials and endpoint in its
+[R2 S3 setup guide](https://developers.cloudflare.com/r2/get-started/s3/).
+
+The worker stages validated files in `tmp/`, uploads them, and streams them
+back to verify their size and SHA-256 digest. It publishes a `latest.json`
+manifest only after the entire selected batch verifies. For Camp the manifest
+is at:
+
+```text
+s3://parquets/exports/_damagemap_exports/camp_fire_qaqc/latest.json
+```
+
+The manifest's `streams` map contains newest-first histories for each feature
+layer and `annotations`. Entries contain the object `key`, database `revision`,
+`row_count`, byte `size`, and `sha256`. Snapshot keys include their revision
+and content digest, so new exports do not overwrite old snapshot bytes.
+Annotation-only batches retain unchanged feature references in the manifest.
+After manifest verification, the worker records feature-layer publication in
+`export_state`, then prunes older generated objects, keeping two revisions per
+stream by default. Cleanup follows only validated manifest keys, never scans
+or deletes other objects in the source bucket, and protects configured source
+URLs. The `annotations` layer ID is reserved for the annotation stream.
+
+A publication failure exits the worker without advancing its change token;
+Compose restarts it and retries a complete snapshot. Pending deletion keys
+are saved in the manifest for retry. An interrupted upload can leave an
+unreferenced object; cleanup deliberately does not scan for these orphaned
+objects. Run one worker per project/destination against the same PostGIS;
+publication is serialized with a database advisory lock. An older snapshot
+cannot replace a newer manifest.
+
+Exports inherit the bucket's access settings. In the public source bucket,
+export files can also be public, including all reviewers' labels and identities;
+the app's blinded-review controls do not restrict direct bucket access.
 
 For an assigned project, pass its YAML file and development identity to the app:
 

@@ -59,8 +59,9 @@ through `api/feature_store.py` and reviews through `api/review_store.py`.
 - PostGIS is the mutable shared source of truth.
 - Annotation records and geometry edits are read from and written to PostGIS.
 - `api/export.py` writes one current, COG-scoped GeoParquet per feature layer
-  plus a joinable multi-reviewer annotation Parquet to local `tmp/`; bucket
-  publication remains a separate future step.
+  plus a joinable multi-reviewer annotation Parquet to local `tmp/` staging.
+  `api/r2_export.py` publishes verified snapshots and a manifest to the
+  destination in YAML `exports`, then prunes older generated objects.
 
 See [`api/README.md`](api/README.md) for the database lifecycle and service
 relationships.

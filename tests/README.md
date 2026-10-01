@@ -16,6 +16,7 @@ database and are skipped when `TEST_DATABASE_URL` is absent.
 | `test_bootstrap.py` | Multi-reviewer assignment sync, stable source identities, COG filtering, H3 generation, and deterministic tasks |
 | `test_bootstrap_integration.py` | Transactional multi-layer import, out-of-COG filtering, point/polygon reads, database reviews, and preservation across repeated startup |
 | `test_export.py` | Revisioned feature/annotation snapshots, join keys, GeoParquet metadata, empty layers, and automatic time/edit thresholds |
+| `test_r2_export.py` | In-memory object publication, readback checksums, annotation-only manifests, failed uploads, retryable retention, stale snapshots, and source protection |
 | `test_run_script.py` | Runs the deployment script against a recording Docker stub to verify path handling, failure stops, and database-preserving update order |
 
 ## Relationships
@@ -26,6 +27,7 @@ test_frontend.py ----------------> app.py + frontend/
 test_fetch_overture_buildings.py -> src/fetch_overture_buildings.py
 test_bootstrap.py ---------------> src/api/bootstrap.py
 test_export.py ------------------> src/api/export.py
+test_r2_export.py ---------------> src/api/r2_export.py
 test_api.py ---------------------> src/api/{auth,main,migrate,models}.py
 
 TEST_DATABASE_URL

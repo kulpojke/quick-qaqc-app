@@ -6,6 +6,13 @@ project:
   name: camp_fire_qaqc
   fire_date: '2018-11-08'
 
+# *!*! Publish generated snapshots alongside, but never over, immutable inputs.
+# *!*! R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY belong in the server .env.
+exports:
+  bucket: parquets
+  endpoint_url: https://ed9a058640a1241556bd4d897f168856.r2.cloudflarestorage.com
+  prefix: exports
+
 paths:
   # A local COG path or an HTTP(S) URL.
   imagery_cog: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/waldoair-campfire/waldoair_campfire.tif

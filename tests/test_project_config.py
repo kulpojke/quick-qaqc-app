@@ -76,6 +76,46 @@ class ReviewConfigTests(unittest.TestCase):
             },
         }
 
+    def test_r2_destination_is_read_from_yaml(self):
+        '''*!*! Each project controls its bucket and prefix independently of secrets.'''
+
+        values = self.base_config()
+        values['exports'] = {
+            'bucket': 'source-bucket',
+            'endpoint_url': 'https://' + 'a' * 32 + '.r2.cloudflarestorage.com/',
+            'prefix': 'exports/camp/',
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_review_config(self.write_config(Path(directory), values))
+        self.assertEqual(config.exports.bucket, 'source-bucket')
+        self.assertEqual(config.exports.prefix, 'exports/camp')
+        self.assertFalse(config.exports.endpoint_url.endswith('/'))
+
+    def test_invalid_export_settings_are_rejected(self):
+        '''*!*! Refuse bucket URLs, credential fields, unsafe prefixes, and public endpoints.'''
+
+        valid = {
+            'bucket': 'source-bucket',
+            'endpoint_url': 'https://' + 'a' * 32 + '.r2.cloudflarestorage.com',
+        }
+        for invalid in (
+            {}, None, {'bucket': 'https://public.r2.dev'}, {'prefix': '../inputs'},
+            {'prefix': ''}, {'endpoint_url': 'https://public.r2.dev'},
+            {'secret_access_key': 'must-not-be-in-yaml'},
+        ):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                values = self.base_config()
+                values['exports'] = invalid if invalid in ({}, None) else {**valid, **invalid}
+                with self.assertRaises(ConfigError):
+                    load_review_config(self.write_config(Path(directory), values))
+
+    def test_omitted_exports_preserves_local_snapshots(self):
+        '''*!*! Existing projects retain their local export behavior.'''
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_review_config(self.write_config(Path(directory), self.base_config()))
+        self.assertIsNone(config.exports)
+
     def test_resolves_layer_and_imagery_paths(self):
         '''*!*! Local sources resolve while bucket URLs remain unchanged.'''
 

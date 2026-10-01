@@ -13,6 +13,7 @@ reads, and concurrent API updates.
 | `migrate.py` | Applies numbered SQL files from `../../migrations/` once and verifies their checksums |
 | `bootstrap.py` | Reprojects and COG-filters configured GeoParquet layers, generates H3 rows, and synchronizes layer tasks and reviewer assignments |
 | `export.py` | Streams current feature layers and multi-reviewer annotations through DuckDB into revisioned local snapshots |
+| `r2_export.py` | Uploads and verifies snapshots, publishes a per-project manifest, advances feature export state, and prunes older generated R2 objects |
 | `feature_store.py` | Returns compact assigned features and applies browser point/polygon edits with optimistic version checking |
 | `review_store.py` | Reads and writes reviewer annotations with task, assignment, and feature-version checks |
 | `auth.py` | Resolves development identities and validates Cloudflare Access JWTs for production reviewers |
@@ -113,8 +114,12 @@ writes. Feature layers are GeoParquet; annotations are ordinary Parquet keyed
 by `annotation_id` and the composite `project_id`, `layer_id`, `feature_id`
 feature reference, represented in both outputs as `_dm_project_id`,
 `_dm_layer_id`, and `_dm_feature_id`. Annotation-only batches do not rewrite
-feature files. Local staging does not update `export_state`; that record is
-reserved for the later bucket-publish step.
+feature files. When YAML includes `exports`, `r2_export.py` uploads snapshots to
+that R2 bucket, verifies their bytes by SHA-256 readback, and publishes
+`<prefix>/_damagemap_exports/<project>/latest.json`. Feature `export_state` rows
+advance only after the manifest verifies; annotation publication is tracked
+in the manifest. With no `exports` section, staging remains local-only and
+does not update publication state.
 
 Compose passes the same required `PROJECT_CONFIG` to the app, bootstrap, and
 export worker beneath the read-only `/project` mount. `PROJECT_CONFIG_DIR`
@@ -127,6 +132,17 @@ generated revisions for each changed stream and deletes older generated files.
 The filename matcher is project-and-stream specific, and configured local
 source Parquets are protected from cleanup. `EXPORT_REVISIONS_TO_KEEP` can
 raise the retention count but must be at least one.
+
+R2 retention also keeps that many revisions per stream, only deleting exact
+generated keys from the manifest after successful publication and database
+bookkeeping. Original source keys are protected. The manifest preserves
+unchanged feature references during annotation-only batches and pending cleanup
+across interrupted deletions. Database advisory locking serializes publication;
+stale snapshots fail rather than replacing newer manifests. Failures propagate
+before local cleanup and watch-state advancement, and Compose restarts the
+worker for a full retry. Interrupted uploads can leave unreferenced objects;
+there is no bucket-wide orphan cleanup. Credentials are supplied only to the
+export service through `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`.
 
 Run the API directly:
 
