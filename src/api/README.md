@@ -12,6 +12,7 @@ reads, and concurrent API updates.
 | `database.py` | Reads `DATABASE_URL`, creates the Psycopg connection pool, and provides request-scoped connections |
 | `migrate.py` | Applies numbered SQL files from `../../migrations/` once and verifies their checksums |
 | `bootstrap.py` | Reprojects and COG-filters configured GeoParquet layers, generates H3 rows, and synchronizes layer tasks and reviewer assignments |
+| `auto_assign.py` | Selects whole building hexes by fraction or confidence, balances reviewer workloads, and persists shared bootstrap/browser overrides |
 | `export.py` | Streams current feature layers and multi-reviewer annotations through DuckDB into revisioned local snapshots |
 | `r2_export.py` | Uploads and verifies snapshots, publishes a per-project manifest, advances feature export state, and prunes older generated R2 objects |
 | `feature_store.py` | Returns compact assigned features and applies browser point/polygon edits with optimistic version checking |
@@ -32,6 +33,8 @@ migrate.py
   001_initial.sql
   002_feature_imports.sql
   003_feature_layers.sql
+  004_layer_h3_resolutions.sql
+  005_auto_hex_assignments.sql
         |
         v
 bootstrap.py <---- project_config.py <---- camp_config.yaml
@@ -40,6 +43,7 @@ bootstrap.py <---- project_config.py <---- camp_config.yaml
         +---- CRS transform and COG-intersection filter
         +---- layer-aware features and generated feature_h3
         +---- per-layer tasks and feature_imports ledger
+        +---- auto_assign.py selects or reuses saved whole-hex assignments
         |
         +------------------+
         v                  v
@@ -56,6 +60,14 @@ layer/mode/H3 assignment to the existing task tables. Before repopulating a
 managed task it clears H3 cells and changes old reviewer rows to
 `all_features = false`; this revokes stale access while preserving annotations
 that retain a foreign key to those reviewer rows.
+
+Bootstrap accepts `--auto-assign-hex FRAC [N]`, `--conf COLUMN LIMIT`, and
+`--hex-resolution R`; `run.sh` forwards these flags. Confidence overrides the
+fraction and selects whole hexes containing any qualifying building. Saved
+allocations in `auto_hex_assignments` override YAML H3 lists on later starts.
+The app loads the same saved allocation before constructing its handler.
+`--manual-assign-hex` removes the override. See the root README for selection,
+balancing, eligibility, and restart behavior.
 
 ## Read And Write Paths
 

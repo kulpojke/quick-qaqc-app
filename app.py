@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import io
 import json
 import os
+from threading import BoundedSemaphore, Lock
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +37,10 @@ from src.project_config import (
 
 
 TILE_SIZE = 256
+
+# *!*! Bound expensive raster reads and coalesce repeat requests for the same tile.
+TILE_RENDER_SLOTS = BoundedSemaphore(4)
+TILE_LOCKS = tuple(Lock() for _ in range(32))
 
 # *!*! Frontend files remain external assets for direct serving in the container.
 FRONTEND_DIR = Path(__file__).resolve().parent / 'frontend'
@@ -78,19 +85,41 @@ def cog_source_exists(source: CogSource) -> bool:
 
 
 def render_cog_tile(cog_source: CogSource, z: int, x: int, y: int) -> bytes:
-    '''Returns rendered tile'''
+    '''*!*! Reuse rendered tiles for five minutes, invalidating changed local files.'''
+
+    if not 0 <= z <= 23 or not 0 <= x < 2 ** z or not 0 <= y < 2 ** z:
+        raise ValueError('Invalid tile coordinates')
+    source = str(cog_source)
+    if is_http_url(source):
+        version = int(time.monotonic() // 300)
+    else:
+        stat = Path(source).stat()
+        version = (stat.st_mtime_ns, stat.st_size)
+    key = (source, z, x, y, version)
+    with TILE_LOCKS[hash(key) % len(TILE_LOCKS)]:
+        return _render_cog_tile_cached(*key)
+
+
+@lru_cache(maxsize=256)
+def _render_cog_tile_cached(source: str, z: int, x: int, y: int, version: object) -> bytes:
+    '''*!*! Cache PNGs while giving each bounded raster read its own GDAL context.'''
+
+    import rasterio
     from rio_tiler.errors import TileOutsideBounds
     from rio_tiler.io import Reader
 
+    # *!*! Remote COGs carry internal metadata; skip unrelated sidecar probes.
+    options = {
+        'GDAL_DISABLE_READDIR_ON_OPEN': 'EMPTY_DIR',
+        'GDAL_HTTP_VERSION': '2TLS',
+    } if is_http_url(source) else {}
     try:
-        # fetch the tile
-        with Reader(str(cog_source)) as cog:
-            # TODO: allow for different band orders?
-            indexes = (1, 2, 3) if cog.dataset.count >= 3 else (1,)
-            tile = cog.tile(x, y, z, indexes=indexes)
-            return tile.render(img_format="PNG")
+        with TILE_RENDER_SLOTS, rasterio.Env(**options):
+            with Reader(source) as cog:
+                indexes = (1, 2, 3) if cog.dataset.count >= 3 else (1,)
+                tile = cog.tile(x, y, z, indexes=indexes)
+                return tile.render(img_format='PNG')
     except TileOutsideBounds:
-        # return and empty tile
         return empty_png_tile()
 
 
@@ -360,7 +389,8 @@ def make_handler(
         def send_png(self, body: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "image/png")
-            self.send_header("Cache-Control", "no-store")
+            # *!*! Cache imagery only in the user's browser, not shared proxies.
+            self.send_header('Cache-Control', 'private, max-age=60')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             try:
@@ -586,6 +616,14 @@ def main() -> None:
         raise SystemExit('DATABASE_URL is required')
 
     try:
+        # *!*! Runtime hex filtering must match bootstrap's persisted overrides.
+        from psycopg.rows import dict_row
+        import psycopg
+        from src.api.auto_assign import saved_assignment_config
+        from src.api.database import database_url
+
+        with psycopg.connect(database_url(), row_factory=dict_row) as connection:
+            review_config = saved_assignment_config(connection, review_config)
         handler = make_handler(review_config)
     except (OSError, RuntimeError, ValueError) as error:
         raise SystemExit(f'Could not load project features: {error}') from error

@@ -13,6 +13,12 @@ afterward.
 `004_layer_h3_resolutions.sql` records each layer's configured resolutions so
 newly drawn features receive the same normalized H3 indexes as imported rows.
 
+`005_auto_hex_assignments.sql` stores each project's automatic selection options,
+reviewer/layer eligibility signature, and whole-hex allocations. Bootstrap saves
+these atomically with task permissions; the browser server loads the same
+allocations. The row cascades with project deletion. Removing the override
+through `--manual-assign-hex` restores YAML permissions on the next task sync.
+
 ## Schema Overview
 
 | Table | Purpose |
@@ -24,6 +30,7 @@ newly drawn features receive the same normalized H3 indexes as imported rows.
 | `tasks` | Annotation, QA/QC, or editing work units |
 | `task_reviewers` | Reviewers assigned to tasks |
 | `task_h3_assignments` | H3 cells assigned to individual reviewers |
+| `auto_hex_assignments` | Saved automatic hex allocation and selection settings per project |
 | `annotations` | Each reviewer's current annotation for a feature |
 | `annotation_history` | Previous versions of changed annotations |
 | `feature_history` | Previous versions of edited features |

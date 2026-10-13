@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,11 @@ def create_client(destination: ExportConfig):
     secret_key = os.environ.get('R2_SECRET_ACCESS_KEY', '').strip()
     if not access_key or not secret_key:
         raise RuntimeError('R2 exports require R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY')
+    if len(access_key) != 32:
+        raise RuntimeError(
+            'R2_ACCESS_KEY_ID must be the 32-character S3 access key ID, '
+            'not the token name or rclone remote name'
+        )
     return boto3.client(
         's3',
         endpoint_url=destination.endpoint_url,
@@ -101,7 +107,8 @@ def read_manifest(client, bucket: str, key: str, project_id: str, root: str) -> 
     finally:
         body.close()
     pattern = re.compile(
-        rf'{re.escape(root)}[A-Za-z0-9_-]+/revision-[0-9]+-[a-f0-9]{{64}}\.parquet'
+        rf'{re.escape(root)}[A-Za-z0-9_-]+/revision-[0-9]+-'
+        r'(?:[a-f0-9]{64}|[0-9]{8}T[0-9]{6}\.[0-9]{6}Z)\.parquet'
     )
     try:
         if (
@@ -119,9 +126,11 @@ def read_manifest(client, bucket: str, key: str, project_id: str, root: str) -> 
             ):
                 raise ValueError('Invalid stream')
             for entry in entries:
-                expected = f'{root}{stream}/revision-{entry["revision"]}-{entry["sha256"]}.parquet'
+                suffix = entry.get('timestamp', entry['sha256'])
+                expected = f'{root}{stream}/revision-{entry["revision"]}-{suffix}.parquet'
                 if (
                     entry['key'] != expected or not pattern.fullmatch(entry['key'])
+                    or not re.fullmatch(r'[a-f0-9]{64}', entry['sha256'])
                     or not isinstance(entry['revision'], int)
                     or not isinstance(entry['row_count'], int)
                     or not isinstance(entry['size'], int)
@@ -189,10 +198,11 @@ def publish_locked(
 
         return any(path == unquote(key) or path.endswith('/' + unquote(key)) for path in source_paths)
     pending = set(manifest['prune'])
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     for result in results:
         digest = file_digest(result.path)
         size = result.path.stat().st_size
-        key = f'{root}{result.stream_id}/revision-{revision}-{digest}.parquet'
+        key = f'{root}{result.stream_id}/revision-{revision}-{timestamp}.parquet'
         if protected(key):
             raise RuntimeError('R2 export key overlaps a configured source')
         client.upload_file(
@@ -200,10 +210,13 @@ def publish_locked(
             ExtraArgs={'ContentType': 'application/vnd.apache.parquet', 'Metadata': {'sha256': digest}},
         )
         verify_object(client, destination.bucket, key, digest, size)
-        entry = {'key': key, 'revision': revision, 'sha256': digest, 'size': size, 'row_count': result.row_count}
+        entry = {
+            'key': key, 'revision': revision, 'timestamp': timestamp,
+            'sha256': digest, 'size': size, 'row_count': result.row_count,
+        }
         history = manifest['streams'].get(result.stream_id, [])
         # *!*! A restart may regenerate equivalent bytes at the same database
-        # *!*! revision. Keep one output per revision, with content-addressed keys.
+        # *!*! revision. Keep one output per revision, with timestamped keys.
         replaced = [item for item in history if item['revision'] == revision and item['key'] != key]
         history = [entry] + [item for item in history if item['revision'] != revision]
         history.sort(key=lambda item: item['revision'], reverse=True)

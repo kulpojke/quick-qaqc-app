@@ -60,7 +60,8 @@ git pull --ff-only
 ./run.sh camp_config.yaml
 ```
 
-`run.sh` accepts one YAML path, relative to your current directory or absolute.
+`run.sh` accepts a YAML path, relative to your current directory or absolute,
+followed by optional assignment flags described below.
 It sets the Compose variables for that invocation without editing `.env`,
 builds the shared image using Docker's cache, validates the YAML and configured
 R2 bucket access, starts or
@@ -77,6 +78,57 @@ relative sibling data paths work. For external YAML, it mounts the YAML's
 parent directory; keep local inputs beneath that directory. It always uses
 this checkout's `.env` and `compose.yaml`. Use the same Compose project name
 as the existing deployment (default `damagemap-qaqc`) to reuse its volume.
+
+### Automatic hex assignments
+
+Assign approximately 25% of buildings, in whole hexes, to two distinct reviewers
+per hex (omit `2` for one reviewer):
+
+```bash
+./run.sh spokane_config.yaml --auto-assign-hex 0.25 2
+```
+
+Select every hex containing a building whose `confidence` is at or below `0.7`:
+
+```bash
+./run.sh spokane_config.yaml --auto-assign-hex 0.25 2 --conf confidence 0.7
+```
+
+`--conf COLUMN LIMIT` **overrides the fraction**. All buildings in a selected hex
+are assigned, including neighbors above the threshold. Values are compared in
+the column's original units; null values do not select a hex, and a missing
+column or invalid non-null value stops assignment. The fraction must be between
+0 and 1; without confidence selection, zero assigns no buildings.
+
+Assignment runs separately for each polygon layer, using its current,
+non-deleted, COG-filtered PostGIS buildings and generated H3 indexes. Point
+layers retain their YAML assignments. The default resolution is the coarsest
+in the layer's `h3_resolutions`; add `--hex-resolution 8` to use a finer generated
+resolution. Large hexes can make the requested fraction approximate and leave
+some reviewers with no work.
+
+Only reviewers already assigned that layer in YAML participate, and their
+annotation/editing permissions are retained. Each selected hex goes to exactly
+`N` distinct reviewers. The allocator balances building counts, not hex counts,
+and gives heavier remaining bundles to reviewers earlier in YAML. The sample
+and allocation are deterministic. Startup prints selected building counts and
+each reviewer's workload.
+
+Automatic assignments override manual `h3_indexes` without rewriting YAML.
+They persist in PostGIS and are reused on ordinary restarts, including when
+the same flags are repeated. Changing selection options explicitly generates
+a new allocation. Changes to reviewer eligibility/order or layer sources and
+resolutions require rerunning with the auto flags or restoring manual mode:
+
+```bash
+./run.sh spokane_config.yaml --manual-assign-hex
+```
+
+Manual mode removes the saved override and reapplies YAML assignments. Feature
+edits and annotations are preserved in either mode. Bootstrap stores the
+override and task permissions in one transaction, and the app loads that same
+override for browser filtering. Reviewers assigned zero hexes receive no
+building access rather than the YAML empty-list shortcut for all features.
 
 Set `PROJECT_CONFIG` in `.env` to the project YAML, or pass it when invoking
 Compose directly instead of using the script:
@@ -220,8 +272,11 @@ s3://parquets/exports/_damagemap_exports/camp_fire_qaqc/latest.json
 
 The manifest's `streams` map contains newest-first histories for each feature
 layer and `annotations`. Entries contain the object `key`, database `revision`,
-`row_count`, byte `size`, and `sha256`. Snapshot keys include their revision
-and content digest, so new exports do not overwrite old snapshot bytes.
+`row_count`, byte `size`, `sha256`, and a UTC `timestamp`. Snapshot keys include
+their revision and datetime, for example
+`revision-17-20261012T183045.123456Z.parquet`. Checksums remain in the manifest
+and object metadata for upload verification. Existing hash-named snapshots
+remain supported and age out through normal retention.
 Annotation-only batches retain unchanged feature references in the manifest.
 After manifest verification, the worker records feature-layer publication in
 `export_state`, then prunes older generated objects, keeping two revisions per
@@ -350,6 +405,14 @@ and assignments come from the YAML configuration; the authenticated identity
 selects the reviewer entry.
 
 The imagery should appear as well as hexagonal grid cells. Grid cells only appear where features are present. The grid will change scale when you zoom. Zoom to the desired level and select a grid cell by clicking it. Use escape to exit a selected grid cell.
+
+Rendered COG tiles use a 256-entry process cache with five-minute remote-source
+refresh intervals; changed local source files invalidate their cached tiles.
+At most four raster reads run concurrently, and duplicate requests share the
+cached result. Browsers may cache imagery privately for 60 seconds. Leaflet
+requests imagery after zoom animations settle, avoiding intermediate zoom
+levels. New uncached views still require remote COG reads. Reload the page
+after deploying frontend changes.
 
 The cell will appear as a pink outline. A green circle will show the location of the first feature to annotate.
 

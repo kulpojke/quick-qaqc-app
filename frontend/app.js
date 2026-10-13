@@ -128,7 +128,8 @@ function firstAvailableTool() {
       return { layerId: layer.id, mode: tool.mode };
     }
   }
-  throw new Error('No configured layer mode is available');
+  // *!*! Whole-hex allocation can legitimately leave a reviewer with no work.
+  return { layerId: null, mode: null };
 }
 
 let activeTool = firstAvailableTool();
@@ -495,6 +496,10 @@ function selectLayerTool(layerId, mode) {
 
 function renderLayerPanel() {
   layerList.replaceChildren();
+  if (!layers.length) {
+    layerList.textContent = 'No work is currently assigned to you.';
+    return;
+  }
   layers.forEach((layer) => {
     const state = layerStates.get(layer.id);
     const row = document.createElement('div');
@@ -568,7 +573,7 @@ async function updateCogLayer() {
     throw new Error(await infoResponse.text());
   }
   const info = await infoResponse.json();
-  const cacheKey = encodeURIComponent(`${cogPath}-${Date.now()}`);
+  const cacheKey = encodeURIComponent(cogPath);
   const bounds = L.latLngBounds(info.bounds);
   cogLayer = L.tileLayer(
     `/api/cog/tile/{z}/{x}/{y}.png?path=${encodedPath}&v=${cacheKey}`,
@@ -579,9 +584,29 @@ async function updateCogLayer() {
       maxZoom: 23,
       opacity: 1,
       tms: false,
+      // *!*! Request the final view instead of intermediate animated zoom levels.
+      updateWhenZooming: false,
+      updateWhenIdle: true,
     }
   ).addTo(map);
   map.fitBounds(bounds, { padding: [24, 24] });
+}
+
+// *!*! Never combine assigned hexes into a coarser displayed review cell.
+function minimumGridResolution() {
+  const layer = activeLayerDefinition();
+  const indexes = layer ? (layer.assignments[taskModeForTool()] || []) : [];
+  let resolution = 5;
+  for (const index of indexes) {
+    const assignedResolution = h3.getResolution
+      ? h3.getResolution(index)
+      : h3.h3GetResolution(index);
+    resolution = Math.max(resolution, assignedResolution);
+  }
+  if (layer && layer.geometryTypes.some((type) => ['Point', 'MultiPoint'].includes(type))) {
+    resolution = Math.max(resolution, POINT_MIN_H3_RESOLUTION);
+  }
+  return resolution;
 }
 
 function h3ResolutionForZoom(zoom) {
@@ -589,12 +614,8 @@ function h3ResolutionForZoom(zoom) {
   const layer = h3ZoomLayers.find((entry) => (
     numericZoom >= entry.minZoom && numericZoom <= entry.maxZoom
   ));
-  let resolution = layer ? layer.resolution : h3ZoomLayers[h3ZoomLayers.length - 1].resolution;
-  const activeLayer = activeLayerDefinition();
-  if (activeLayer && activeLayer.geometryTypes.some((type) => ['Point', 'MultiPoint'].includes(type))) {
-    resolution = Math.max(resolution, POINT_MIN_H3_RESOLUTION);
-  }
-  return resolution;
+  const resolution = layer ? layer.resolution : h3ZoomLayers[h3ZoomLayers.length - 1].resolution;
+  return Math.max(resolution, minimumGridResolution());
 }
 
 function h3BoundaryLatLngs(cell) {
@@ -947,7 +968,7 @@ function selectCellFeature(feature) {
   selectedCellPosition = nextOpenIndex >= 0 ? nextOpenIndex : 0;
   renderFeatureLayers(false, true);
   syncPolygonDrawing();
-  selectFeatureAtCellPosition(selectedCellPosition, false);
+  selectFeatureAtCellPosition(selectedCellPosition, isAnnotationMode());
 }
 
 // *!*! Cell-local navigation stays scoped to the active layer and selected mode.
@@ -1081,7 +1102,7 @@ function renderFeatureLayers(fitToFeatures, preserveCell = false) {
     h3GridLayer = null;
   }
   clearSelectedFeature();
-  if (!preserveCell) {
+  if (!preserveCell || (selectedCellRes != null && selectedCellRes < minimumGridResolution())) {
     selectedCellId = null;
     selectedCellRes = null;
     selectedCellFeatureIds = [];

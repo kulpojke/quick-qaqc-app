@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +16,8 @@ from rasterio.transform import from_bounds
 import yaml
 
 from src.api.bootstrap import bootstrap_project
+from src.api.auto_assign import AutoAssignOptions, saved_assignment_config
+from psycopg.rows import dict_row
 from src.api.feature_store import (
     create_project_polygon,
     read_project_features,
@@ -264,6 +267,66 @@ ORDER BY layer_id
                         'DELETE FROM projects WHERE id = %s',
                         [project_id],
                     )
+
+    def test_auto_assignments_control_access_and_survive_restart(self):
+        '''*!*! Real imports, permissions, confidence overrides, and manual reset agree.'''
+
+        database_url = os.environ['TEST_DATABASE_URL']
+        project_id = f'auto-assign-test-{uuid4()}'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            polygons, points, cog = [directory / name for name in ('polygons.parquet', 'points.parquet', 'cog.tif')]
+            config_path = directory / 'project.yaml'
+            self.write_geoparquets(polygons, points)
+            self.write_cog(cog)
+            self.write_config(config_path, project_id, polygons, points, cog)
+            config = load_review_config(config_path)
+            config = replace(config, reviewers=tuple(
+                replace(config.reviewers[0], id=name) for name in ('alice', 'bob', 'carol')
+            ))
+            try:
+                with patch.dict(os.environ, {'DATABASE_URL': database_url}):
+                    bootstrap_project(config, AutoAssignOptions(1, 2))
+                    seen = {}
+                    for reviewer in config.reviewers:
+                        features = read_project_features(project_id, reviewer.id)['features']
+                        seen[reviewer.id] = {feature['id'] for feature in features
+                                             if feature['layer_id'] == 'buildings'}
+                    self.assertEqual(sum('one' in ids for ids in seen.values()), 2)
+                    self.assertEqual(sum('two' in ids for ids in seen.values()), 2)
+                    with psycopg.connect(database_url, row_factory=dict_row) as connection:
+                        before = saved_assignment_config(connection, config)
+                    bootstrap_project(config)
+                    with psycopg.connect(database_url, row_factory=dict_row) as connection:
+                        self.assertEqual(saved_assignment_config(connection, config), before)
+                        connection.execute(
+                            '''
+UPDATE features SET properties = properties || jsonb_build_object(
+    'confidence', CASE WHEN id = 'one' THEN 0.2 ELSE 0.9 END
+) WHERE project_id = %s AND layer_id = 'buildings'
+''', [project_id],
+                        )
+                    bootstrap_project(config, AutoAssignOptions(0, 1, 'confidence', 0.2))
+                    seen = [feature['id'] for reviewer in config.reviewers
+                            for feature in read_project_features(project_id, reviewer.id)['features']
+                            if feature['layer_id'] == 'buildings']
+                    self.assertEqual(seen, ['one'])
+                    # *!*! A bad column rolls back instead of clearing the previous assignments.
+                    with self.assertRaisesRegex(ValueError, 'missing'):
+                        bootstrap_project(config, AutoAssignOptions(1, 1, 'missing', 0.5))
+                    self.assertEqual(
+                        [feature['id'] for feature in read_project_features(project_id, 'alice')['features']
+                         if feature['layer_id'] == 'buildings'], ['one'],
+                    )
+                    bootstrap_project(config, manual_assign=True)
+                    for reviewer in config.reviewers:
+                        self.assertEqual(len(read_project_features(project_id, reviewer.id)['features']), 3)
+                    with psycopg.connect(database_url, row_factory=dict_row) as connection:
+                        self.assertEqual(saved_assignment_config(connection, config), config)
+            finally:
+                with psycopg.connect(database_url) as connection:
+                    connection.execute('DELETE FROM feature_history WHERE project_id = %s', [project_id])
+                    connection.execute('DELETE FROM projects WHERE id = %s', [project_id])
 
 
 if __name__ == '__main__':

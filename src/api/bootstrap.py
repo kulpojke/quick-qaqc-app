@@ -14,6 +14,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from src.api.database import database_url
+from src.api.auto_assign import (
+    add_assignment_arguments, assignment_options, prepare_assignments, validate_options,
+)
 from src.fetch_overture_buildings import cog_bounds_wgs84
 from src.project_config import LayerConfig, ReviewConfig, load_review_config
 
@@ -475,9 +478,11 @@ VALUES (%s, %s, %s, %s, %s)
     return feature_count, True
 
 
-def bootstrap_project(config: ReviewConfig) -> BootstrapResult:
+def bootstrap_project(config: ReviewConfig, auto_options=None, *, manual_assign=False) -> BootstrapResult:
     '''*!*! Import all configured layers and refresh task assignments.'''
 
+    if auto_options is not None:
+        validate_options(config, auto_options)
     bounds_wgs84 = cog_bounds_wgs84(config.imagery_cog)
     with psycopg.connect(database_url(), row_factory=dict_row) as connection:
         connection.execute(
@@ -505,7 +510,8 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
             )
             feature_count += layer_count
             imported = imported or layer_imported
-        task_ids = sync_tasks(connection, config)
+        assigned_config = prepare_assignments(connection, config, auto_options, manual_assign)
+        task_ids = sync_tasks(connection, assigned_config)
     return BootstrapResult(
         project_id=config.project_id,
         feature_count=feature_count,
@@ -521,14 +527,21 @@ def build_parser() -> argparse.ArgumentParser:
         description='Initialize a PostGIS review project from GeoParquet layers.',
     )
     parser.add_argument('--yaml', type=Path, required=True)
+    add_assignment_arguments(parser)
     return parser
 
 
 def main() -> None:
     '''*!*! Bootstrap configured layers and report the resulting database state.'''
 
-    config = load_review_config(build_parser().parse_args().yaml)
-    result = bootstrap_project(config)
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        options = assignment_options(args)
+        config = load_review_config(args.yaml)
+        result = bootstrap_project(config, options, manual_assign=args.manual_assign_hex)
+    except ValueError as error:
+        parser.error(str(error))
     action = 'Imported' if result.imported else 'Reused'
     tasks = ', '.join(f'{key}={task_id}' for key, task_id in result.task_ids.items())
     print(
