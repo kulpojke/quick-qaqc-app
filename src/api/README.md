@@ -55,6 +55,10 @@ with the same sources and COG bounds synchronize task assignments but do not
 replace feature rows. Changed source identity or bounds stop startup so
 database edits cannot be silently overwritten.
 
+Bootstrap refreshes PostgreSQL planner statistics after imports and assignment
+sync, before committing and starting the app. This prevents initial feature
+reads from using poor plans while waiting for automatic analysis of new tables.
+
 Configuration version 3 lists multiple reviewers. Bootstrap applies each
 layer/mode/H3 assignment to the existing task tables. Before repopulating a
 managed task it clears H3 cells and changes old reviewer rows to

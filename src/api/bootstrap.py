@@ -512,6 +512,12 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
             imported = imported or layer_imported
         assigned_config = prepare_assignments(connection, config, auto_options, manual_assign)
         task_ids = sync_tasks(connection, assigned_config)
+        # *!*! Populate planner statistics before the first browser reads new data.
+        # *!*! Waiting for autovacuum can leave those reads running a poor plan.
+        connection.execute(
+            'ANALYZE features, feature_h3, feature_layers, '
+            'tasks, task_reviewers, task_h3_assignments'
+        )
     return BootstrapResult(
         project_id=config.project_id,
         feature_count=feature_count,
