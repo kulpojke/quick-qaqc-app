@@ -36,13 +36,24 @@ class CogTileTests(unittest.TestCase):
         self.assertEqual(results, [b'PNG'] * 16)
         self.cog.tile.assert_called_once_with(1, 1, 2, indexes=(1, 2, 3))
 
-    @patch('app.time.monotonic', side_effect=[1, 2, 301])
+    @patch('app.TILE_CACHE_TTL_SECONDS', 86400)
+    @patch('app.time.monotonic', side_effect=[1, 301, 86401])
     def test_remote_tiles_expire(self, clock):
-        '''*!*! A new five-minute interval refreshes remote imagery.'''
+        '''*!*! Tiles survive five minutes and refresh at the configured daily boundary.'''
 
         for _ in range(3):
             render_cog_tile('https://example.com/cog.tif', 2, 1, 1)
         self.assertEqual(self.cog.tile.call_count, 2)
+
+    @patch('app.time.monotonic', return_value=1)
+    def test_tiles_survive_beyond_previous_cache_capacity(self, clock):
+        '''*!*! Navigating more than 256 tiles retains earlier imagery for revisits.'''
+
+        source = 'https://example.com/cog.tif'
+        for x in range(300):
+            render_cog_tile(source, 10, x, 1)
+        render_cog_tile(source, 10, 0, 1)
+        self.assertEqual(self.cog.tile.call_count, 300)
 
     def test_changed_local_file_invalidates_tile(self):
         '''*!*! Local source changes refresh tiles without a server restart.'''

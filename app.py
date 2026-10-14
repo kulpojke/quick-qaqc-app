@@ -38,6 +38,12 @@ from src.project_config import (
 
 TILE_SIZE = 256
 
+# *!*! Static imagery benefits from a larger cache shared by all reviewers.
+TILE_CACHE_MAX_TILES = int(os.environ.get('TILE_CACHE_MAX_TILES', '2048'))
+TILE_CACHE_TTL_SECONDS = int(os.environ.get('TILE_CACHE_TTL_SECONDS', '86400'))
+if TILE_CACHE_MAX_TILES < 1 or TILE_CACHE_TTL_SECONDS < 1:
+    raise ValueError('TILE_CACHE_MAX_TILES and TILE_CACHE_TTL_SECONDS must be positive integers')
+
 # *!*! Bound expensive raster reads and coalesce repeat requests for the same tile.
 TILE_RENDER_SLOTS = BoundedSemaphore(4)
 TILE_LOCKS = tuple(Lock() for _ in range(32))
@@ -85,13 +91,13 @@ def cog_source_exists(source: CogSource) -> bool:
 
 
 def render_cog_tile(cog_source: CogSource, z: int, x: int, y: int) -> bytes:
-    '''*!*! Reuse rendered tiles for five minutes, invalidating changed local files.'''
+    '''*!*! Reuse tiles for the configured interval, invalidating changed local files.'''
 
     if not 0 <= z <= 23 or not 0 <= x < 2 ** z or not 0 <= y < 2 ** z:
         raise ValueError('Invalid tile coordinates')
     source = str(cog_source)
     if is_http_url(source):
-        version = int(time.monotonic() // 300)
+        version = int(time.monotonic() // TILE_CACHE_TTL_SECONDS)
     else:
         stat = Path(source).stat()
         version = (stat.st_mtime_ns, stat.st_size)
@@ -100,7 +106,7 @@ def render_cog_tile(cog_source: CogSource, z: int, x: int, y: int) -> bytes:
         return _render_cog_tile_cached(*key)
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=TILE_CACHE_MAX_TILES)
 def _render_cog_tile_cached(source: str, z: int, x: int, y: int, version: object) -> bytes:
     '''*!*! Cache PNGs while giving each bounded raster read its own GDAL context.'''
 
@@ -390,7 +396,7 @@ def make_handler(
             self.send_response(status)
             self.send_header("Content-Type", "image/png")
             # *!*! Cache imagery only in the user's browser, not shared proxies.
-            self.send_header('Cache-Control', 'private, max-age=60')
+            self.send_header('Cache-Control', 'private, max-age=86400')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             try:

@@ -406,10 +406,18 @@ selects the reviewer entry.
 
 The imagery should appear as well as hexagonal grid cells. Grid cells only appear where features are present. The grid will change scale when you zoom. Zoom to the desired level and select a grid cell by clicking it. Use escape to exit a selected grid cell.
 
-Rendered COG tiles use a 256-entry process cache with five-minute remote-source
-refresh intervals; changed local source files invalidate their cached tiles.
+Rendered COG tiles use a shared 2,048-entry process cache on the app server
+(the Droplet in production), with 24-hour remote-source refresh intervals.
+Set `TILE_CACHE_MAX_TILES` and `TILE_CACHE_TTL_SECONDS` in `.env` to tune these
+positive integer limits. The cache fills on demand, can consume a few hundred
+MB when full, and clears when the app process restarts. Changed local source
+files invalidate their cached tiles. When replacing a remote COG at the same
+URL, restart the app to clear its server cache or wait for the refresh interval;
+a new source URL has separate cache entries.
 At most four raster reads run concurrently, and duplicate requests share the
-cached result. Browsers may cache imagery privately for 60 seconds. Leaflet
+cached result. Browsers may cache imagery privately for 24 hours. When replacing
+imagery at the same URL, use a browser hard refresh to bypass cached tiles;
+restarting the server alone does not clear browser caches. Leaflet
 requests imagery after zoom animations settle, avoiding intermediate zoom
 levels. New uncached views still require remote COG reads. Reload the page
 after deploying frontend changes.

@@ -34,6 +34,8 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *database-environment
+      TILE_CACHE_MAX_TILES: ${TILE_CACHE_MAX_TILES:-2048}
+      TILE_CACHE_TTL_SECONDS: ${TILE_CACHE_TTL_SECONDS:-86400}
     healthcheck:
       test:
         - CMD
