@@ -70,6 +70,7 @@ class ExportTests(unittest.TestCase):
                 '_dm_project_id': 'camp',
                 '_dm_layer_id': 'observations',
                 '_dm_feature_id': 'point-one',
+                '_dm_edited': True,
             },
         }
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -90,7 +91,7 @@ class ExportTests(unittest.TestCase):
                 connection.execute('LOAD spatial')
                 row = connection.execute(
                     '''
-SELECT GLOBALID, DAMAGE, h3_r8, ST_AsText(geometry)
+SELECT GLOBALID, DAMAGE, h3_r8, ST_AsText(geometry), _dm_edited
 FROM read_parquet(?)
 ''',
                     [str(output_path)],
@@ -108,7 +109,7 @@ FROM read_parquet(?)
         }
         self.assertEqual(
             row,
-            ('point-one', 'Destroyed', '8828101235fffff', 'POINT (-121.2 39.7)'),
+            ('point-one', 'Destroyed', '8828101235fffff', 'POINT (-121.2 39.7)', True),
         )
         self.assertIn('geo', keys)
 

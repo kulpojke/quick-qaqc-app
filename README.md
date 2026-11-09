@@ -29,6 +29,16 @@ If needed, build a COG from a directory of TIFF imagery:
 python src/build_cog.py path/to/imagery_dir
 ```
 
+For imagery served by the app, add `--web --compress jpeg`. This reprojects
+to EPSG:3857 and aligns 256 px blocks with the web-map tile grid
+(GoogleMapsCompatible), so each map tile is read from one block instead of
+being reprojected on request. Without `--zoom-level`, it rounds up to the next
+zoom at least as fine as the source so no detail is lost.
+
+```bash
+python src/build_cog.py path/to/imagery_dir --web --compress jpeg --zoom-level 22
+```
+
 Run the app against a migrated and bootstrapped database:
 
 ```bash
@@ -219,6 +229,11 @@ their geometry remains in the feature GeoParquet. Each row retains its unique
 collision-safe join back to a feature. In the files these shared columns are
 named `_dm_project_id`, `_dm_layer_id`, and `_dm_feature_id`; every feature
 layer receives the same standard keys regardless of its source ID field.
+Feature layers also get `_dm_edited`, which is true when a feature's geometry
+or properties changed after import or drawing. A layer can name an origin
+column with `fields.origin` (for example `origin: origin`): imported features
+keep the value from their source, and features drawn in the app get the
+editor's ID, so exports separate original features from added ones.
 Multiple reviewers therefore remain separate rows. Annotation-only changes
 update only this annotation snapshot, and an idle worker does not rewrite
 unchanged data.
@@ -319,8 +334,17 @@ project:
   id: 'example_fire'
   name: 'example_fire'
 
-paths:
-  imagery_cog: 'https://example.com/post-fire-imagery.tif'
+# One or more COGs. The first is the primary: it sets the starting view and
+# the bounds features are filtered to. With two or more, a switcher appears at
+# the top right of the map and B flips between the current and previous
+# imagery. A single `paths: {imagery_cog: ...}` still works instead.
+imagery:
+  - id: post
+    name: 'Post-fire'
+    source: 'https://example.com/post-fire-imagery.tif'
+  - id: pre
+    name: 'Pre-fire'
+    source: 'https://example.com/pre-fire-imagery.tif'
 
 layers:
   - id: buildings
@@ -331,6 +355,9 @@ layers:
       feature_id: id
       predicted_class: predicted_class
       confidence: confidence
+      # Source column naming where each feature came from; polygons drawn in
+      # the app store the editor's ID here.
+      origin: origin
     h3_resolutions: [5, 6, 7, 8, 9, 10]
     modes: [annotation, editing]
     editing:
@@ -345,6 +372,9 @@ layers:
       feature_id: GLOBALID
       predicted_class: DAMAGE
       display: [DAMAGE, STRUCTURETYPE, SITEADDRESS]
+      # Shown on mouse hover, under the layer name. Without hover, the
+      # tooltip shows the feature ID.
+      hover: [DAMAGE, SITEADDRESS]
     h3_resolutions: [5, 6, 7, 8, 9, 10]
     modes: [annotation, editing]
     editing:

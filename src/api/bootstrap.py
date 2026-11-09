@@ -124,6 +124,10 @@ def read_geoparquet_rows(
                 f'Layer {layer.id!r} is missing feature ID field '
                 f'{layer.feature_id_field!r}'
             )
+        if layer.origin_field and layer.origin_field not in columns:
+            raise ValueError(
+                f'Layer {layer.id!r} is missing origin field {layer.origin_field!r}'
+            )
 
         geometry_column = geometry_columns[0]
         property_columns = [column for column in columns if column != geometry_column]
@@ -343,6 +347,8 @@ ON CONFLICT (project_id, id) DO UPDATE SET
                 'predicted_class': layer.predicted_class_field,
                 'confidence': layer.confidence_field,
                 'display': list(layer.display_fields),
+                'hover': list(layer.hover_fields),
+                'origin': layer.origin_field,
             }),
             layer.h3_prefix,
             list(layer.h3_resolutions),

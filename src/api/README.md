@@ -129,7 +129,9 @@ project revision. It omits soft-deleted features and performs atomic DuckDB
 writes. Feature layers are GeoParquet; annotations are ordinary Parquet keyed
 by `annotation_id` and the composite `project_id`, `layer_id`, `feature_id`
 feature reference, represented in both outputs as `_dm_project_id`,
-`_dm_layer_id`, and `_dm_feature_id`. Annotation-only batches do not rewrite
+`_dm_layer_id`, and `_dm_feature_id`. Feature files also carry `_dm_edited`
+(feature version above 1), and drawn polygons store the editor's ID in the
+layer's `fields.origin` column. Annotation-only batches do not rewrite
 feature files. When YAML includes `exports`, `r2_export.py` uploads snapshots to
 that R2 bucket, verifies their bytes by SHA-256 readback, and publishes
 `<prefix>/_damagemap_exports/<project>/latest.json`. Feature `export_state` rows

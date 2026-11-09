@@ -99,6 +99,7 @@ ORDER BY feature.layer_id, feature.id
             configured_fields.get('predicted_class'),
             configured_fields.get('confidence'),
             *(configured_fields.get('display') or []),
+            *(configured_fields.get('hover') or []),
         }
         properties = {
             name: row['properties'].get(name)
@@ -424,6 +425,7 @@ SELECT
     reviewer.all_features,
     layer.geometry_types,
     layer.feature_id_field,
+    layer.fields ->> 'origin' AS origin_field,
     layer.h3_resolutions,
     layer.editing
 FROM task_reviewers AS reviewer
@@ -509,6 +511,9 @@ WHERE task_id = %s AND reviewer_id = %s
         feature_id = str(uuid4())
         stored_properties = dict(properties)
         stored_properties.setdefault(assignment['feature_id_field'], feature_id)
+        # *!*! The server, not the browser, records who drew the feature.
+        if assignment['origin_field']:
+            stored_properties[assignment['origin_field']] = reviewer_id
         created = connection.execute(
             '''
 INSERT INTO features (

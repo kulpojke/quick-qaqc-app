@@ -5,7 +5,7 @@ if (!configResponse.ok) {
 }
 const {
   defaultAnnotationLabels,
-  defaultCogPath,
+  imagery,
   layers,
 } = await configResponse.json();
 
@@ -48,7 +48,12 @@ let selectedCellFeatureIds = [];
 let selectedCellPosition = 0;
 let buildingsData = null;
 let h3GridLayer = null;
-let cogLayer = null;
+// *!*! Imagery tile layers by id (as promises), plus which two are in use.
+const imageryLayers = new Map();
+let activeImageryId = null;
+let previousImageryId = null;
+let imageryQueue = Promise.resolve();
+let imageryControl = null;
 let selectedFeatureMarker = null;
 let selectedFeatureLayer = null;
 let selectedOutlineVisible = false;
@@ -63,7 +68,7 @@ let geometryDirty = false;
 let draftFeatureLayer = null;
 
 const annotationLabels = defaultAnnotationLabels;
-const cogPath = defaultCogPath;
+const imageryOptions = imagery || [];
 const confidenceFilter = 0;
 const confidenceFilters = [
   { value: 'all', maxRank: Infinity },
@@ -558,38 +563,142 @@ function renderLayerPanel() {
   });
 }
 
-// *!*! COG metadata establishes map bounds before Leaflet requests server-rendered tiles.
-async function updateCogLayer() {
-  if (cogLayer) {
-    map.removeLayer(cogLayer);
-    cogLayer = null;
+// *!*! COG metadata gives each imagery its bounds before Leaflet requests
+// *!*! server-rendered tiles. Layers are created once, on first use.
+function imageryLayer(image) {
+  if (!imageryLayers.has(image.id)) {
+    const query = `imagery=${encodeURIComponent(image.id)}`;
+    const layer = fetch(`/api/cog/info?${query}`)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const info = await response.json();
+        return L.tileLayer(
+          `/api/cog/tile/{z}/{x}/{y}.png?${query}&v=${encodeURIComponent(image.source)}`,
+          {
+            attribution: 'COG imagery',
+            bounds: L.latLngBounds(info.bounds),
+            maxNativeZoom: 23,
+            maxZoom: 23,
+            opacity: 0,
+            tms: false,
+            // *!*! Request the final view instead of intermediate animated zoom levels.
+            updateWhenZooming: false,
+            updateWhenIdle: true,
+          }
+        );
+      });
+    // *!*! Forget a failed lookup so a later switch can retry it.
+    layer.catch(() => imageryLayers.delete(image.id));
+    imageryLayers.set(image.id, layer);
   }
-  if (!cogPath) {
+  return imageryLayers.get(image.id);
+}
+
+// *!*! The active imagery is visible; the previous one stays on the map
+// *!*! invisibly so B flips back instantly instead of waiting for tiles.
+async function showImagery(imageryId) {
+  const image = imageryOptions.find((option) => option.id === imageryId);
+  if (!image || imageryId === activeImageryId) {
     return;
   }
-  const encodedPath = encodeURIComponent(cogPath);
-  const infoResponse = await fetch(`/api/cog/info?path=${encodedPath}`);
-  if (!infoResponse.ok) {
-    throw new Error(await infoResponse.text());
-  }
-  const info = await infoResponse.json();
-  const cacheKey = encodeURIComponent(cogPath);
-  const bounds = L.latLngBounds(info.bounds);
-  cogLayer = L.tileLayer(
-    `/api/cog/tile/{z}/{x}/{y}.png?path=${encodedPath}&v=${cacheKey}`,
-    {
-      attribution: 'COG imagery',
-      bounds: bounds,
-      maxNativeZoom: 23,
-      maxZoom: 23,
-      opacity: 1,
-      tms: false,
-      // *!*! Request the final view instead of intermediate animated zoom levels.
-      updateWhenZooming: false,
-      updateWhenIdle: true,
+  const target = await imageryLayer(image);
+  previousImageryId = activeImageryId;
+  activeImageryId = imageryId;
+  for (const [id, promise] of imageryLayers) {
+    const layer = await promise;
+    if (id === activeImageryId || id === previousImageryId) {
+      // *!*! Stack above the basemap, with the visible imagery on top.
+      layer.setZIndex(id === activeImageryId ? 11 : 10);
+      layer.setOpacity(id === activeImageryId ? 1 : 0);
+      if (!map.hasLayer(layer)) {
+        layer.addTo(map);
+      }
     }
-  ).addTo(map);
-  map.fitBounds(bounds, { padding: [24, 24] });
+    else if (map.hasLayer(layer)) {
+      map.removeLayer(layer);
+    }
+  }
+  updateImageryControl();
+  return target;
+}
+
+// *!*! Queue switches so fast key presses apply in order, one at a time.
+function requestImagery(imageryId) {
+  imageryQueue = imageryQueue
+    .then(() => showImagery(imageryId))
+    .catch((error) => alert(error.message));
+  return imageryQueue;
+}
+
+// *!*! B flips to the previous imagery, or to the next one before any switch.
+function imageryToggleTarget() {
+  if (imageryOptions.length < 2) {
+    return null;
+  }
+  if (previousImageryId) {
+    return imageryOptions.find((option) => option.id === previousImageryId);
+  }
+  const index = imageryOptions.findIndex((option) => option.id === activeImageryId);
+  return imageryOptions[(index + 1) % imageryOptions.length];
+}
+
+// *!*! Only shown with 2+ imagery options; the bold name says what is on screen.
+function addImageryControl() {
+  if (imageryOptions.length < 2) {
+    return;
+  }
+  const control = L.control({ position: 'topright' });
+  control.onAdd = () => {
+    const container = L.DomUtil.create('div', 'imagery-control');
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
+    const heading = L.DomUtil.create('div', 'imagery-heading', container);
+    heading.textContent = 'Imagery';
+    const select = L.DomUtil.create('select', 'imagery-select', container);
+    select.setAttribute('aria-label', 'Imagery shown on the map');
+    for (const option of imageryOptions) {
+      const element = L.DomUtil.create('option', '', select);
+      element.value = option.id;
+      element.textContent = option.name;
+    }
+    select.addEventListener('change', () => {
+      requestImagery(select.value);
+      // *!*! Return focus to the page so the B shortcut keeps working.
+      select.blur();
+    });
+    const hint = L.DomUtil.create('div', 'imagery-hint', container);
+    imageryControl = { container, select, hint };
+    return container;
+  };
+  control.addTo(map);
+}
+
+function updateImageryControl() {
+  if (!imageryControl) {
+    return;
+  }
+  const { container, select, hint } = imageryControl;
+  select.value = activeImageryId;
+  const target = imageryToggleTarget();
+  hint.replaceChildren();
+  const key = document.createElement('kbd');
+  key.textContent = 'B';
+  hint.append(key, ` → ${target ? target.name : ''}`);
+  // *!*! A brief highlight confirms every switch, including keyboard ones.
+  container.classList.remove('imagery-switched');
+  void container.offsetWidth;
+  container.classList.add('imagery-switched');
+}
+
+async function showPrimaryImagery() {
+  if (!imageryOptions.length) {
+    return;
+  }
+  addImageryControl();
+  const layer = await showImagery(imageryOptions[0].id);
+  map.fitBounds(layer.options.bounds, { padding: [24, 24] });
 }
 
 // *!*! Never combine assigned hexes into a coarser displayed review cell.
@@ -1060,7 +1169,31 @@ function onEachFeature(feature, layer, interactive) {
       layer.bringToFront();
     });
   }
-  layer.bindTooltip(`${feature.layer_name || feature.layer_id}<br>ID: ${id}`, { sticky: false });
+  // *!*! Leaflet calls the function on hover, so tooltips are built lazily.
+  layer.bindTooltip(() => featureTooltip(feature), { sticky: false });
+}
+
+// *!*! Text nodes keep source values from injecting HTML into the tooltip.
+function featureTooltip(feature) {
+  const configured = layerField(feature, 'hover');
+  const hoverFields = Array.isArray(configured) ? configured : [];
+  const lines = [feature.layer_name || feature.layer_id];
+  if (hoverFields.length) {
+    for (const name of hoverFields) {
+      const value = feature.properties ? feature.properties[name] : null;
+      lines.push(`${name}: ${value == null || value === '' ? '—' : value}`);
+    }
+  } else {
+    lines.push(`ID: ${featureId(feature)}`);
+  }
+  const container = document.createElement('div');
+  lines.forEach((text, index) => {
+    if (index) {
+      container.appendChild(document.createElement('br'));
+    }
+    container.appendChild(document.createTextNode(String(text)));
+  });
+  return container;
 }
 
 function bringActiveLayerToFront() {
@@ -1124,7 +1257,7 @@ function renderFeatureLayers(fitToFeatures, preserveCell = false) {
   if (activeLayer && layerStates.get(activeLayer.id).visible) {
     addFeatureLayer(activeLayer);
   }
-  if (fitToFeatures && !cogPath) {
+  if (fitToFeatures && !imageryOptions.length) {
     const activeGroup = featureLayerGroups.get(activeTool.layerId);
     if (activeGroup && activeGroup.getLayers().length) {
       map.fitBounds(activeGroup.getBounds(), { padding: [24, 24] });
@@ -1337,6 +1470,15 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     clearSelectedCell();
   }
+  // *!*! B switches imagery, except while typing or with a modifier key held.
+  const typing = event.target.closest && event.target.closest('input, textarea, select, [contenteditable="true"]');
+  if ((event.key || '').toLowerCase() === 'b' && !typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const target = imageryToggleTarget();
+    if (target) {
+      event.preventDefault();
+      requestImagery(target.id);
+    }
+  }
 });
 
 saveButton.addEventListener('click', () => {
@@ -1363,7 +1505,7 @@ async function init() {
   await loadAnnotations();
   await loadFeatures();
   try {
-    await updateCogLayer();
+    await showPrimaryImagery();
   }
   catch (error) {
     alert(error.message);

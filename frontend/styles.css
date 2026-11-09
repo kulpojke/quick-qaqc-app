@@ -327,3 +327,60 @@ button:disabled {
     bottom: calc(44vh + 12px);
   }
 }
+
+/* *!*! Imagery switcher: the bold name always says which COG is on screen. */
+.imagery-control {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+  padding: 8px 10px;
+}
+
+.imagery-heading {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.imagery-select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  padding: 4px 6px;
+}
+
+.imagery-hint {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.imagery-hint kbd {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: inherit;
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+/* *!*! A short outline pulse confirms each switch without staying on screen. */
+.imagery-switched {
+  animation: imagery-switched 0.6s ease-out;
+}
+
+@keyframes imagery-switched {
+  from {
+    box-shadow: 0 0 0 4px var(--annotated), var(--shadow);
+  }
+  to {
+    box-shadow: var(--shadow);
+  }
+}

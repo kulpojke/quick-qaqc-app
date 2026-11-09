@@ -123,6 +123,7 @@ SELECT
     feature.id,
     ST_AsGeoJSON(feature.geometry)::jsonb AS geometry,
     feature.properties,
+    feature.version,
     COALESCE(
         (
             SELECT jsonb_object_agg(cell.resolution::text, cell.h3_index)
@@ -155,6 +156,9 @@ ORDER BY feature.id
             properties['_dm_project_id'] = config.project_id
             properties['_dm_layer_id'] = layer.id
             properties['_dm_feature_id'] = row['id']
+            # *!*! Imported and drawn features start at version 1; any later
+            # *!*! geometry or property edit increments it.
+            properties['_dm_edited'] = row['version'] > 1
             for resolution, h3_index in _json_object(row['h3'], 'h3').items():
                 properties[f'{layer.h3_prefix}{resolution}'] = h3_index
             feature = {

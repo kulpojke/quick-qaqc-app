@@ -38,6 +38,8 @@ class ReviewConfigTests(unittest.TestCase):
                         'predicted_class': 'prediction',
                         'confidence': 'score',
                         'display': ['address'],
+                        'hover': ['address', 'prediction'],
+                        'origin': 'origin',
                     },
                     'h3_prefix': 'building_h3_r',
                     'modes': ['annotation'],
@@ -136,6 +138,11 @@ class ReviewConfigTests(unittest.TestCase):
             self.assertEqual(config.layers[0].feature_id_field, 'building_id')
             self.assertEqual(config.layers[0].predicted_class_field, 'prediction')
             self.assertEqual(config.layers[0].display_fields, ('address',))
+            self.assertEqual(config.layers[0].hover_fields, ('address', 'prediction'))
+            # *!*! Layers without hover fall back to showing only the feature ID.
+            self.assertEqual(config.layers[1].hover_fields, ())
+            self.assertEqual(config.layers[0].origin_field, 'origin')
+            self.assertEqual(config.layers[1].origin_field, '')
             self.assertEqual(config.layers[0].h3_prefix, 'building_h3_r')
             self.assertEqual(config.layers[1].geometry_types, ('Point',))
             self.assertEqual(config.layers[1].source_crs, 'EPSG:6414')
@@ -148,6 +155,51 @@ class ReviewConfigTests(unittest.TestCase):
                 ('8828308281fffff',),
             )
             self.assertIsNone(reviewer.assignment_for('buildings', 'editing'))
+
+    def test_imagery_list_keeps_first_entry_as_primary(self):
+        '''*!*! Multiple COGs load in order; the first drives bootstrap bounds.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            values = self.base_config()
+            del values['paths']
+            values['imagery'] = [
+                {'id': 'post', 'name': 'Post-fire', 'source': 'imagery/post.tif'},
+                {'id': 'pre', 'source': 'https://example.com/pre.tif'},
+            ]
+            config = load_review_config(self.write_config(directory, values))
+
+            self.assertEqual([image.id for image in config.imagery], ['post', 'pre'])
+            self.assertEqual(config.imagery[0].name, 'Post-fire')
+            # *!*! A missing name falls back to the id.
+            self.assertEqual(config.imagery[1].name, 'pre')
+            self.assertEqual(config.imagery_cog, str(directory / 'imagery/post.tif'))
+            self.assertEqual(config.imagery[1].source, 'https://example.com/pre.tif')
+
+    def test_single_imagery_cog_becomes_one_imagery_entry(self):
+        '''*!*! Older configs with paths.imagery_cog keep working unchanged.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            config = load_review_config(self.write_config(directory, self.base_config()))
+
+            self.assertEqual(len(config.imagery), 1)
+            self.assertEqual(config.imagery[0].source, config.imagery_cog)
+
+    def test_rejects_ambiguous_or_duplicate_imagery(self):
+        '''*!*! One imagery form per config, with unique ids.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            values = self.base_config()
+            values['imagery'] = [{'id': 'post', 'source': 'post.tif'}]
+            with self.assertRaisesRegex(ConfigError, 'not both'):
+                load_review_config(self.write_config(directory, values))
+
+            del values['paths']
+            values['imagery'].append({'id': 'post', 'source': 'other.tif'})
+            with self.assertRaisesRegex(ConfigError, 'Duplicate imagery id'):
+                load_review_config(self.write_config(directory, values))
 
     def test_rejects_version_two_configuration(self):
         '''*!*! The former single-reviewer schema fails with a clear version error.'''

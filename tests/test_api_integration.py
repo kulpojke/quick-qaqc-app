@@ -43,6 +43,7 @@ INSERT INTO feature_layers (
     source_crs,
     geometry_types,
     feature_id_field,
+    fields,
     h3_prefix,
     editing
 )
@@ -53,6 +54,7 @@ VALUES (
     'EPSG:4326',
     ARRAY['Polygon', 'MultiPolygon'],
     'id',
+    '{"feature_id": "id", "origin": "origin"}'::jsonb,
     'h3_r',
     '{"move": true, "reshape": true, "create": true, "delete": true}'::jsonb
 )
@@ -210,10 +212,12 @@ VALUES
                     [[2, 2], [2, 3], [3, 3], [3, 2], [2, 2]],
                 ],
             },
-            {'source': 'drawn'},
+            # *!*! A browser-supplied origin must not survive creation.
+            {'source': 'drawn', 'origin': 'spoofed'},
         )
 
         self.assertEqual(created['version'], 1)
+        self.assertEqual(created['properties']['origin'], 'alice')
         self.assertEqual(set(created['h3']), {'5', '6', '7', '8', '9', '10'})
         deleted = delete_project_polygon(
             self.project_id,

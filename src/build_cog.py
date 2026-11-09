@@ -6,6 +6,9 @@ Example:
 
 The default output for that example is:
     /path/to/chix_fire_cog/chix_fire.tif
+
+For imagery served by the annotation app, build a web-aligned JPEG COG:
+    python src/build_cog.py /path/to/chix_fire/ --web --compress jpeg
 '''
 
 from __future__ import annotations
@@ -88,17 +91,50 @@ def build_vrt(
     return vrt_path
 
 
+def web_options(quality: int, zoom_level: int | None) -> list[str]:
+    '''*!*! Creation options that align the COG with web-map tiles.
+
+    GDAL reprojects to EPSG:3857 and lays 256 px blocks on the same grid that
+    Leaflet requests, so serving a map tile means reading one block instead of
+    reprojecting several. Without zoom_level, round up to the next finer zoom:
+    GDAL's default picks the closest one, which can be coarser than the source
+    (Mercator stretches ground distances by 1/cos(latitude)).
+    '''
+    options = [
+        'TILING_SCHEME=GoogleMapsCompatible',
+        'ALIGNED_LEVELS=8',
+        'BLOCKSIZE=256',
+        f'OVERVIEW_QUALITY={quality}',
+        'BIGTIFF=YES',
+    ]
+    if zoom_level is None:
+        options.append('ZOOM_LEVEL_STRATEGY=UPPER')
+    else:
+        options.append(f'ZOOM_LEVEL={zoom_level}')
+    return options
+
+
 def build_cog(
     gdal_translate: str,
     source_path: Path,
     output_path: Path,
     compress: str,
     quality: int,
-    overwrite: bool,
+    web: bool = False,
+    zoom_level: int | None = None,
 ) -> None:
     '''Builds COG from vrt'''
-    command = [
-        gdal_translate,
+    # *!*! gdal_translate has no -overwrite flag; it replaces the output
+    # *!*! itself, and main() already refuses to overwrite without --overwrite.
+    command = [gdal_translate]
+    if web:
+        # *!*! A larger cache speeds up the reprojection, and temp files go
+        # *!*! beside the output rather than on a possibly full system disk.
+        command.extend([
+            '--config', 'GDAL_CACHEMAX', '4096',
+            '--config', 'CPL_TMPDIR', str(output_path.parent),
+        ])
+    command.extend([
         '-of',
         'COG',
         str(source_path),
@@ -106,18 +142,17 @@ def build_cog(
         '-co',
         f'COMPRESS={compress.upper()}',
         '-co',
-        'BIGTIFF=IF_SAFER',
-        '-co',
-        'BLOCKSIZE=512',
-        '-co',
         'RESAMPLING=BILINEAR',
         '-co',
         'NUM_THREADS=ALL_CPUS',
-    ]
+    ])
+    if web:
+        for option in web_options(quality, zoom_level):
+            command.extend(['-co', option])
+    else:
+        command.extend(['-co', 'BIGTIFF=IF_SAFER', '-co', 'BLOCKSIZE=512'])
     if compress.lower() in {'jpeg', 'webp'}:
         command.extend(['-co', f'QUALITY={quality}'])
-    if overwrite:
-        command.insert(1, '-overwrite')
 
     run_command(command)
 
@@ -167,6 +202,22 @@ def build_parser() -> argparse.ArgumentParser:
         help='JPEG/WEBP quality when using lossy compression. Default: 90.',
     )
     parser.add_argument(
+        '--web',
+        action='store_true',
+        help=(
+            'Reproject to EPSG:3857 and align 256 px blocks with web-map tiles '
+            '(GoogleMapsCompatible) for fast serving in the annotation app.'
+        ),
+    )
+    parser.add_argument(
+        '--zoom-level',
+        type=int,
+        help=(
+            'Web-map zoom level of the full-resolution data, with --web. '
+            'Default: the next zoom at least as fine as the source.'
+        ),
+    )
+    parser.add_argument(
         '--overwrite',
         action='store_true',
         help='Overwrite an existing output COG.',
@@ -180,7 +231,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.zoom_level is not None and not args.web:
+        parser.error('--zoom-level only applies with --web')
     input_dir = args.input_dir.expanduser().resolve()
     if not input_dir.is_dir():
         raise SystemExit(f'Input directory does not exist: {input_dir}')
@@ -215,7 +269,8 @@ def main() -> None:
         output_path=output_path,
         compress=args.compress,
         quality=args.quality,
-        overwrite=args.overwrite,
+        web=args.web,
+        zoom_level=args.zoom_level,
     )
 
     if vrt_path and not args.keep_vrt:

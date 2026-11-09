@@ -27,6 +27,7 @@ class FrontendTests(unittest.TestCase):
             project_id='project-one',
             annotation_labels=('damaged', 'undamaged'),
             imagery_cog='',
+            imagery=(),
             project_name='Test project',
             modes=modes,
             reviewers=(reviewer,),
@@ -103,6 +104,26 @@ class FrontendTests(unittest.TestCase):
         self.assertIn('featureIsAssigned(feature, assignmentMode)', javascript)
         self.assertNotIn("getElementById('project-name')", javascript)
 
+    def test_cog_requests_only_resolve_configured_imagery(self):
+        '''*!*! ?imagery=<id> picks a configured COG; unknown ids get nothing.'''
+
+        config = self.review_config()
+        config.imagery_cog = 'https://example.com/post.tif'
+        config.imagery = (
+            SimpleNamespace(id='post', name='Post', source='https://example.com/post.tif'),
+            SimpleNamespace(id='pre', name='Pre', source='https://example.com/pre.tif'),
+        )
+        handler_class = self.handler_class(QaqcStore('project-one', 'alice'), config)
+        handler = handler_class.__new__(handler_class)
+
+        handler.path = '/api/cog/tile/1/0/0.png'
+        self.assertEqual(handler.requested_cog_source(), 'https://example.com/post.tif')
+        handler.path = '/api/cog/tile/1/0/0.png?imagery=pre'
+        self.assertEqual(handler.requested_cog_source(), 'https://example.com/pre.tif')
+        # *!*! A request can name only an id, never a path or URL of its own.
+        handler.path = '/api/cog/info?imagery=/etc/passwd'
+        self.assertIsNone(handler.requested_cog_source())
+
     def test_handler_serves_frontend_assets_and_runtime_config(self):
         '''*!*! Handler routes expose static assets plus JSON runtime configuration.'''
 
@@ -121,6 +142,7 @@ class FrontendTests(unittest.TestCase):
                     predicted_class_field='predicted_class',
                     confidence_field='',
                     display_fields=(),
+                    hover_fields=(),
                     editing=SimpleNamespace(
                         move=False,
                         reshape=False,
@@ -155,6 +177,8 @@ class FrontendTests(unittest.TestCase):
         config = json.loads(handler.wfile.getvalue())
 
         self.assertNotIn('defaultBuildingsPath', config)
+        self.assertNotIn('defaultCogPath', config)
+        self.assertEqual(config['imagery'], [])
         self.assertEqual(config['configuredProjectName'], 'Test project')
         self.assertNotIn('workflowModes', config)
         self.assertEqual(config['layers'][0]['id'], 'buildings')
@@ -217,6 +241,7 @@ class FrontendTests(unittest.TestCase):
             predicted_class_field='',
             confidence_field='',
             display_fields=(),
+            hover_fields=(),
             editing=SimpleNamespace(
                 move=True,
                 reshape=False,
@@ -244,6 +269,7 @@ class FrontendTests(unittest.TestCase):
             project_id='project-one',
             annotation_labels=('damaged',),
             imagery_cog='',
+            imagery=(),
             project_name='Test project',
             modes=('annotation', 'editing'),
             reviewers=(alice, bob),

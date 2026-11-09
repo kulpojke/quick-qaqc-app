@@ -12,7 +12,7 @@ and the shared API package. The browser-facing server remains in
 | `fetch_overture_buildings.py` | Finds an appropriate Fused Overture release, queries buildings inside COG bounds, clips them, adds H3 indexes, and maintains the local cache |
 | `add_h3_indexes.py` | Adds H3 cell columns to polygon data and can combine or deduplicate input files |
 | `geojson2parquet.py` | Converts GeoJSON into compressed GeoParquet using DuckDB Spatial |
-| `build_cog.py` | Builds a VRT and Cloud Optimized GeoTIFF from source TIFF imagery |
+| `build_cog.py` | Builds a VRT and Cloud Optimized GeoTIFF from source TIFF imagery; `--web` makes a web-map-aligned EPSG:3857 COG for the app |
 | `merge_qaqc_annotations.py` | Historical conversion helper for old CSV exports; it is not used by the application |
 | `api/` | Contains PostGIS migration, bootstrap, feature access, authentication, validation, and FastAPI code |
 

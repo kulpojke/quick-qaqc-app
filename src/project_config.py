@@ -49,6 +49,11 @@ class LayerConfig:
     h3_resolutions: tuple[int, ...]
     modes: tuple[str, ...]
     editing: EditingConfig
+    # *!*! Source columns shown on mouse hover; empty shows only the feature ID.
+    hover_fields: tuple[str, ...] = ()
+    # *!*! Source column recording where a feature came from; features drawn in
+    # *!*! the app store the editor's ID there. Empty disables origin tracking.
+    origin_field: str = ''
 
 
 @dataclass(frozen=True)
@@ -104,18 +109,30 @@ class ExportConfig:
 
 
 @dataclass(frozen=True)
+class ImageryConfig:
+    '''*!*! One COG reviewers can display; the first configured is the primary.'''
+
+    id: str
+    name: str
+    source: str
+
+
+@dataclass(frozen=True)
 class ReviewConfig:
     '''*!*! Validated settings loaded from one project YAML file.'''
 
     source_path: Path
     project_id: str
     project_name: str
+    # *!*! The primary imagery source; bootstrap filters features to its bounds.
     imagery_cog: str
     layers: tuple[LayerConfig, ...]
     annotation_labels: tuple[str, ...]
     modes: tuple[str, ...]
     reviewers: tuple[ReviewerConfig, ...]
     exports: ExportConfig | None = None
+    # *!*! Every imagery option in YAML order; imagery[0].source == imagery_cog.
+    imagery: tuple[ImageryConfig, ...] = ()
 
     def reviewer(self, reviewer_id: str) -> ReviewerConfig | None:
         '''*!*! Return one configured reviewer by authenticated identity.'''
@@ -316,15 +333,60 @@ def _parse_editing(layer: dict, position: int) -> EditingConfig:
     )
 
 
-def _parse_display_fields(fields: dict, position: int) -> tuple[str, ...]:
-    '''*!*! Validate optional source columns displayed for one layer.'''
+def _parse_field_list(fields: dict, key: str, position: int) -> tuple[str, ...]:
+    '''*!*! Validate an optional list of source columns, such as display or hover.'''
 
-    values = fields.get('display', [])
+    values = fields.get(key, [])
     if not isinstance(values, list):
-        raise ConfigError(f'layers[{position}].fields.display must be a list')
+        raise ConfigError(f'layers[{position}].fields.{key} must be a list')
     return tuple(
         dict.fromkeys(str(value).strip() for value in values if str(value).strip())
     )
+
+
+def _parse_imagery(root: dict, paths: dict, base_dir: Path) -> tuple[ImageryConfig, ...]:
+    '''*!*! Parse the imagery list, or the older single paths.imagery_cog.
+
+    The first entry is the primary: it sets the map's starting view and the
+    bounds bootstrap filters features to.
+    '''
+
+    values = root.get('imagery')
+    if values is None:
+        source = _resolve_source(
+            paths.get('imagery_cog'),
+            base_dir=base_dir,
+            field='paths.imagery_cog',
+        )
+        return (ImageryConfig(id='imagery', name='Imagery', source=str(source)),)
+    if 'imagery_cog' in paths:
+        raise ConfigError('Use either imagery or paths.imagery_cog, not both')
+    if not isinstance(values, list) or not values:
+        raise ConfigError('imagery must be a non-empty list')
+
+    imagery = []
+    seen_ids = set()
+    for position, value in enumerate(values):
+        section = f'imagery[{position}]'
+        if not isinstance(value, dict):
+            raise ConfigError(f'{section} must be a mapping')
+        imagery_id = _required_string(value, 'id', section)
+        if not LAYER_ID_PATTERN.fullmatch(imagery_id):
+            raise ConfigError(f'{section}.id must contain only letters, numbers, _ or -')
+        if imagery_id in seen_ids:
+            raise ConfigError(f'Duplicate imagery id: {imagery_id}')
+        seen_ids.add(imagery_id)
+        source = _resolve_source(
+            value.get('source'),
+            base_dir=base_dir,
+            field=f'{section}.source',
+        )
+        imagery.append(ImageryConfig(
+            id=imagery_id,
+            name=_optional_string(value, 'name', imagery_id),
+            source=str(source),
+        ))
+    return tuple(imagery)
 
 
 def _parse_layers(
@@ -368,7 +430,9 @@ def _parse_layers(
             feature_id_field=_optional_string(fields, 'feature_id', 'id'),
             predicted_class_field=_optional_string(fields, 'predicted_class', ''),
             confidence_field=_optional_string(fields, 'confidence', ''),
-            display_fields=_parse_display_fields(fields, position),
+            display_fields=_parse_field_list(fields, 'display', position),
+            hover_fields=_parse_field_list(fields, 'hover', position),
+            origin_field=_optional_string(fields, 'origin', ''),
             h3_prefix=_optional_string(value, 'h3_prefix', 'h3_r'),
             h3_resolutions=_parse_h3_resolutions(value, position),
             modes=_parse_layer_modes(value, position, workflow_modes),
@@ -513,11 +577,7 @@ def load_review_config(path: Path) -> ReviewConfig:
     if not project_id:
         raise ConfigError('project.id must be a non-empty string')
 
-    imagery_cog = str(_resolve_source(
-        paths.get('imagery_cog'),
-        base_dir=base_dir,
-        field='paths.imagery_cog',
-    ))
+    imagery = _parse_imagery(root, paths, base_dir)
     layers = _parse_layers(
         root,
         base_dir=base_dir,
@@ -534,7 +594,8 @@ def load_review_config(path: Path) -> ReviewConfig:
         source_path=source_path,
         project_id=project_id,
         project_name=project_name,
-        imagery_cog=imagery_cog,
+        imagery_cog=imagery[0].source,
+        imagery=imagery,
         layers=layers,
         annotation_labels=_parse_labels(root, modes),
         modes=modes,

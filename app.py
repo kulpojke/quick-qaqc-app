@@ -295,7 +295,12 @@ def make_handler(
 
             return {
                 'defaultAnnotationLabels': ','.join(review_config.annotation_labels),
-                'defaultCogPath': review_config.imagery_cog,
+                # *!*! The source doubles as a browser cache key, so replacing
+                # *!*! a COG under a new URL never shows stale tiles.
+                'imagery': [
+                    {'id': image.id, 'name': image.name, 'source': image.source}
+                    for image in review_config.imagery
+                ],
                 'configuredProjectName': review_config.project_name,
                 'layers': [
                     {
@@ -319,6 +324,7 @@ def make_handler(
                             'predictedClass': layer.predicted_class_field,
                             'confidence': layer.confidence_field,
                             'display': list(layer.display_fields),
+                            'hover': list(layer.hover_fields),
                         },
                         'editing': vars(layer.editing),
                     }
@@ -328,7 +334,19 @@ def make_handler(
             }
 
         def requested_cog_source(self) -> CogSource | None:
-            return parse_cog_source(review_config.imagery_cog)
+            '''*!*! Return the configured COG named by ?imagery=<id>, or the primary.
+
+            Only configured sources are served, never a path from the request.
+            '''
+
+            query = parse_qs(urlparse(self.path).query)
+            imagery_id = query.get('imagery', [''])[0].strip()
+            if not imagery_id:
+                return parse_cog_source(review_config.imagery_cog)
+            for image in review_config.imagery:
+                if image.id == imagery_id:
+                    return parse_cog_source(image.source)
+            return None
 
         def requested_review_mode(self, reviewer: ReviewerConfig) -> str | None:
             '''*!*! Return an enabled database review mode from the request.'''
@@ -440,7 +458,7 @@ def make_handler(
             if path == "/api/cog/info":
                 cog_source = self.requested_cog_source()
                 if cog_source is None:
-                    self.send_text("COG path or URL is required", HTTPStatus.BAD_REQUEST)
+                    self.send_text("No configured imagery matches this request", HTTPStatus.NOT_FOUND)
                     return
                 if not cog_source_exists(cog_source):
                     self.send_text(f"COG file not found: {cog_source}", HTTPStatus.NOT_FOUND)
@@ -454,7 +472,7 @@ def make_handler(
             if path.startswith("/api/cog/tile/") and path.endswith(".png"):
                 cog_source = self.requested_cog_source()
                 if cog_source is None:
-                    self.send_text("COG path or URL is required", HTTPStatus.BAD_REQUEST)
+                    self.send_text("No configured imagery matches this request", HTTPStatus.NOT_FOUND)
                     return
                 if not cog_source_exists(cog_source):
                     self.send_text(f"COG file not found: {cog_source}", HTTPStatus.NOT_FOUND)
