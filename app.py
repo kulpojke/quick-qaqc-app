@@ -125,6 +125,11 @@ def _render_cog_tile_cached(source: str, z: int, x: int, y: int, version: object
             with Reader(source) as cog:
                 indexes = (1, 2, 3) if cog.dataset.count >= 3 else (1,)
                 tile = cog.tile(x, y, z, indexes=indexes)
+                # *!*! JPEG is ~4x smaller and much cheaper to encode than PNG,
+                # *!*! but has no transparency: use it only when every pixel is
+                # *!*! valid (mask 0 = outside the image), PNG at image edges.
+                if tile.mask.all():
+                    return tile.render(img_format='JPEG', add_mask=False, quality=85)
                 return tile.render(img_format='PNG')
     except TileOutsideBounds:
         return empty_png_tile()
@@ -411,9 +416,11 @@ def make_handler(
             except BrokenPipeError:
                 return
 
-        def send_png(self, body: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
+        def send_tile(self, body: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "image/png")
+            # *!*! Tiles are JPEG (starts with FF D8) or PNG; label them truthfully.
+            is_jpeg = body[:2] == b'\xff\xd8'
+            self.send_header("Content-Type", "image/jpeg" if is_jpeg else "image/png")
             # *!*! Cache imagery only in the user's browser, not shared proxies.
             self.send_header('Cache-Control', 'private, max-age=86400')
             self.send_header("Content-Length", str(len(body)))
@@ -480,7 +487,7 @@ def make_handler(
                     return
                 try:
                     z, x, y = self.tile_coordinates()
-                    self.send_png(render_cog_tile(cog_source, z, x, y))
+                    self.send_tile(render_cog_tile(cog_source, z, x, y))
                 except Exception as error:
                     self.send_text(str(error), HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
