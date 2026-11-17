@@ -90,6 +90,58 @@ workflow:
     - annotation
     - editing
   reviewers:
+    # *!*! Order matters only with ./run.sh --auto-assign-hex: hexes are whole,
+    # *!*! so loads come out uneven, and heavier bundles go to reviewers earlier
+    # *!*! in this list. Without it, everyone gets every feature.
+    - id: 'graysonplouffe@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
+    - id: 'sampflugh@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
+    - id: 'ethanguilhamet@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
+    - id: 'asophiahoang@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
+    - id: 'sophie.fioravanti@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
+    - id: 'charles.b.higley@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
+    - id: 'geoff.fricker@gmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]
+
     - id: 'michaelhuggins@protonmail.com'
       assignments:
         - layer: buildings
