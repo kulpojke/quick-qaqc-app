@@ -1,0 +1,98 @@
+# Resolve relative paths from the directory containing this YAML file.
+version: 3
+
+project:
+  # *!*! New ID: a fresh database import, and export revisions that cannot
+  # *!*! collide with the old camp_fire_qaqc manifest on R2.
+  id: camp_fire_qaqc_v2
+  name: camp_fire_qaqc_v2
+  fire_date: '2018-11-08'
+
+# *!*! Publish generated snapshots alongside, but never over, immutable inputs.
+# *!*! R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY belong in the server .env.
+exports:
+  bucket: parquets
+  endpoint_url: https://ed9a058640a1241556bd4d897f168856.r2.cloudflarestorage.com
+  prefix: exports
+
+# *!*! The first image is the primary: the starting view, and the bounds
+# *!*! bootstrap filters features to. B flips between the two.
+imagery:
+  - id: waldoair
+    name: WaldoAir 2018 post-fire
+    # Georeferencing corrected in rubber_sheeting/coregister_waldoair.ipynb.
+    source: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/waldoair-campfire/waldoair_campfire_web_v3.tif
+  - id: naip2018
+    name: NAIP 2018-07-18 pre-fire
+    # 6 remote Planetary Computer tiles; rebuild with imagery/build_naip_vrt.py 2018.
+    source: imagery/naip_2018_camp.vrt
+
+# *!*! Each GeoParquet is an independent layer. Bootstrap reprojects to
+# *!*! EPSG:4326, filters to the COG bounds, and generates H3.
+layers:
+  - id: buildings
+    name: Buildings
+    source: https://pub-4a2d84525cf448ee8b7202f038c0622c.r2.dev/camp_buildings_lidar2018_overture2024.parquet
+    geometry_types:
+      - Polygon
+      - MultiPolygon
+    crs: EPSG:4326
+    fields:
+      feature_id: id
+      # lidar, overture or added; polygons drawn in the app get the editor's ID.
+      origin: origin
+      hover:
+        - origin
+        - lidar_class
+        - lidar_height
+        - grey_zone
+    h3_prefix: h3_r
+    h3_resolutions: [5, 6, 7, 8, 9, 10]
+    modes:
+      - annotation
+      - editing
+    editing:
+      move: true
+      reshape: true
+      create: true
+      delete: true
+
+  - id: dins
+    name: CAL FIRE DINS
+    source: https://pub-4a2d84525cf448ee8b7202f038c0622c.r2.dev/DINS.parquet
+    crs: EPSG:6414
+    geometry_types:
+      - Point
+    fields:
+      feature_id: GLOBALID
+      predicted_class: DAMAGE
+      display:
+        - DAMAGE
+        - STRUCTURETYPE
+        - SITEADDRESS
+        - INCIDENTNAME
+    h3_prefix: h3_r
+    h3_resolutions: [5, 6, 7, 8, 9, 10]
+    modes:
+      - annotation
+      - editing
+    editing:
+      move: true
+
+annotation:
+  labels:
+    - damaged
+    - undamaged
+    - unknown
+
+workflow:
+  modes:
+    - annotation
+    - editing
+  reviewers:
+    - id: 'michaelhuggins@protonmail.com'
+      assignments:
+        - layer: buildings
+          modes: [annotation, editing]
+        - layer: dins
+          modes: [annotation, editing]

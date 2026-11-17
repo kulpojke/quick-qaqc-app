@@ -115,10 +115,11 @@ def _render_cog_tile_cached(source: str, z: int, x: int, y: int, version: object
     from rio_tiler.io import Reader
 
     # *!*! Remote COGs carry internal metadata; skip unrelated sidecar probes.
+    # *!*! A local VRT may list remote /vsicurl/ tiles, so it gets the same options.
     options = {
         'GDAL_DISABLE_READDIR_ON_OPEN': 'EMPTY_DIR',
         'GDAL_HTTP_VERSION': '2TLS',
-    } if is_http_url(source) else {}
+    } if is_http_url(source) or source.lower().endswith('.vrt') else {}
     try:
         with TILE_RENDER_SLOTS, rasterio.Env(**options):
             with Reader(source) as cog:
