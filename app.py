@@ -7,6 +7,7 @@ import argparse
 from functools import lru_cache
 import io
 import json
+import math
 import os
 from threading import BoundedSemaphore, Lock
 import time
@@ -140,6 +141,30 @@ def _render_cog_tile_cached(source: str, z: int, x: int, y: int, version: object
         return empty_png_tile()
 
 
+# *!*! Web Mercator metres per pixel of the single zoom-0 tile.
+WEB_MERCATOR_Z0_RESOLUTION = 2 * math.pi * 6378137 / TILE_SIZE
+
+
+def native_zoom(dataset) -> int:
+    '''*!*! The web map zoom whose pixels are as fine as the raster's own.
+
+    Above this zoom a tile adds no detail, so the browser can enlarge it
+    instead of requesting more tiles. The pixel is measured in Web Mercator
+    metres at the raster's centre, so any CRS works.
+    '''
+    from rasterio.warp import transform
+
+    column, row = dataset.width / 2, dataset.height / 2
+    x0, y0 = dataset.transform * (column, row)
+    x1, y1 = dataset.transform * (column + 1, row)
+    xs, ys = transform(dataset.crs, 'EPSG:3857', [x0, x1], [y0, y1])
+    pixel = math.hypot(xs[1] - xs[0], ys[1] - ys[0])
+    zoom = math.log2(WEB_MERCATOR_Z0_RESOLUTION / pixel)
+    # *!*! Round up so no detail is lost; the tolerance keeps an exact z22
+    # *!*! COG at 22 despite floating-point noise.
+    return max(0, min(23, math.ceil(zoom - 0.05)))
+
+
 def cog_info(cog_source: CogSource) -> dict[str, object]:
     '''Returns dict containing info about COG'''
     import rasterio
@@ -162,6 +187,7 @@ def cog_info(cog_source: CogSource) -> dict[str, object]:
             "height": dataset.height,
             "count": dataset.count,
             "bounds": [[bottom, left], [top, right]],
+            "native_zoom": native_zoom(dataset),
         }
 
 
@@ -426,8 +452,11 @@ def make_handler(
             # *!*! Tiles are JPEG (starts with FF D8) or PNG; label them truthfully.
             is_jpeg = body[:2] == b'\xff\xd8'
             self.send_header("Content-Type", "image/jpeg" if is_jpeg else "image/png")
-            # *!*! Cache imagery only in the user's browser, not shared proxies.
-            self.send_header('Cache-Control', 'private, max-age=86400')
+            # *!*! Tiles are the same for every reviewer, so Cloudflare may cache
+            # *!*! them too: each is rendered once, then served from the edge.
+            # *!*! Cloudflare Access still checks the login before its cache. The
+            # *!*! URL carries ?imagery=&v=<source>, so a new COG gets new keys.
+            self.send_header('Cache-Control', 'public, max-age=86400')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             try:

@@ -579,7 +579,9 @@ function imageryLayer(image) {
           {
             attribution: 'COG imagery',
             bounds: L.latLngBounds(info.bounds),
-            maxNativeZoom: 23,
+            // *!*! Past the imagery's own detail, enlarge its finest tiles in
+            // *!*! the browser instead of asking the server for more of them.
+            maxNativeZoom: info.native_zoom ?? 23,
             maxZoom: 23,
             opacity: 0,
             tms: false,

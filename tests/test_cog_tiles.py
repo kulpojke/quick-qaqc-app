@@ -75,6 +75,24 @@ class CogTileTests(unittest.TestCase):
             render_cog_tile('https://example.com/cog.tif', 2, 1, 1)
         self.assertEqual(render_cog_tile('https://example.com/cog.tif', 2, 1, 1), b'PNG')
 
+    def test_native_zoom_matches_raster_resolution(self):
+        '''*!*! A z22 Web Mercator COG reports 22; 60 cm UTM imagery reports 18.'''
+
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_origin
+
+        from app import WEB_MERCATOR_Z0_RESOLUTION, native_zoom
+
+        cases = (
+            ('EPSG:3857', -13537000.0, 4832000.0, WEB_MERCATOR_Z0_RESOLUTION / 2 ** 22, 22),
+            ('EPSG:32610', 620000.0, 4400000.0, 0.6, 18),
+        )
+        for crs, left, top, resolution, expected in cases:
+            profile = dict(driver='GTiff', width=64, height=64, count=1, dtype='uint8',
+                           crs=crs, transform=from_origin(left, top, resolution, resolution))
+            with MemoryFile() as memory, memory.open(**profile) as dataset:
+                self.assertEqual(native_zoom(dataset), expected, crs)
+
     def test_invalid_coordinates_do_not_open_raster(self):
         '''*!*! Invalid zoom or tile indexes are rejected before raster work.'''
 
