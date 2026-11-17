@@ -24,8 +24,8 @@ imagery:
     source: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/waldoair-campfire/waldoair_campfire_web_v3.tif
   - id: naip2018
     name: NAIP 2018-07-18 pre-fire
-    # 6 remote Planetary Computer tiles; rebuild with imagery/build_naip_vrt.py 2018.
-    source: imagery/naip_2018_camp.vrt
+    # Web COG cut to the WaldoAir extent; built by imagery/build_naip_web_cog.sh.
+    source: https://pub-74744b71dff145398dad71e2c6fb505c.r2.dev/naip-campfire/naip_2018_camp_web.tif
 
 # *!*! Each GeoParquet is an independent layer. Bootstrap reprojects to
 # *!*! EPSG:4326, filters to the COG bounds, and generates H3.
