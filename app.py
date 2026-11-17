@@ -45,7 +45,12 @@ if TILE_CACHE_MAX_TILES < 1 or TILE_CACHE_TTL_SECONDS < 1:
     raise ValueError('TILE_CACHE_MAX_TILES and TILE_CACHE_TTL_SECONDS must be positive integers')
 
 # *!*! Bound expensive raster reads and coalesce repeat requests for the same tile.
-TILE_RENDER_SLOTS = BoundedSemaphore(4)
+# *!*! A render mostly waits on R2 (~150 ms) and computes little (~15 ms), so
+# *!*! more slots than CPU cores lets those waits overlap.
+TILE_RENDER_SLOT_COUNT = int(os.environ.get('TILE_RENDER_SLOTS', '4'))
+if TILE_RENDER_SLOT_COUNT < 1:
+    raise ValueError('TILE_RENDER_SLOTS must be a positive integer')
+TILE_RENDER_SLOTS = BoundedSemaphore(TILE_RENDER_SLOT_COUNT)
 TILE_LOCKS = tuple(Lock() for _ in range(32))
 
 # *!*! Frontend files remain external assets for direct serving in the container.
