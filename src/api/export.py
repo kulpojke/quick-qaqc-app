@@ -202,6 +202,13 @@ SELECT
 FROM annotations AS annotation
 JOIN tasks AS task ON task.id = annotation.task_id
 WHERE annotation.project_id = %s
+  -- *!*! Expunged reviewers' labels stay in PostGIS but leave the exports.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM expunged_reviewers AS expunged
+      WHERE expunged.project_id = annotation.project_id
+        AND expunged.reviewer_id = annotation.reviewer_id
+  )
 ORDER BY annotation.layer_id, annotation.feature_id, annotation.reviewer_id
 ''',
             [config.project_id],
@@ -541,8 +548,15 @@ SELECT
     count(*) AS annotation_count,
     COALESCE(sum(version), 0) AS version_total,
     max(updated_at) AS latest_update
-FROM annotations
+FROM annotations AS annotation
 WHERE project_id = %s
+  -- *!*! Same filter as the export, so expunging triggers a new snapshot.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM expunged_reviewers AS expunged
+      WHERE expunged.project_id = annotation.project_id
+        AND expunged.reviewer_id = annotation.reviewer_id
+  )
 ''',
             [config.project_id],
         ).fetchone()

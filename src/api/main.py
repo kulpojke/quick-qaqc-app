@@ -11,6 +11,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from src.api.auth import authenticated_reviewer
+from src.api.auto_assign import UNKNOWN_LABEL, top_up_feature
 from src.api.database import create_pool, get_connection
 from src.api.models import AnnotationSubmission, FeaturePatch
 
@@ -185,6 +186,8 @@ WHERE reviewer.task_id = %(task_id)s
             AND assignment.reviewer_id = reviewer.reviewer_id
       )
   )
+  -- *!*! In an annotation task with feature lists, only listed features.
+  AND reviewer_may_label(reviewer.task_id, reviewer.reviewer_id, feature.id)
 {lock_sql}
 ''',
         {
@@ -394,7 +397,7 @@ WHERE reviewer.task_id = %(task_id)s
   AND reviewer.reviewer_id = %(reviewer_id)s
   AND task.active
   AND feature.deleted_at IS NULL
-  AND (%(after)s IS NULL OR feature.id > %(after)s)
+  AND (%(after)s::text IS NULL OR feature.id > %(after)s::text)
   AND (
       reviewer.all_features
       OR EXISTS (
@@ -410,6 +413,7 @@ WHERE reviewer.task_id = %(task_id)s
             AND assignment.reviewer_id = reviewer.reviewer_id
       )
   )
+  AND reviewer_may_label(reviewer.task_id, reviewer.reviewer_id, feature.id)
 ORDER BY feature.id
 LIMIT %(limit)s
 ''',
@@ -540,6 +544,14 @@ WHERE id = %s
 ''',
             [assignment['project_id']],
         )
+        # *!*! A first "unknown" does not count, so find another reviewer now.
+        if assignment['mode'] == 'annotation' and submission.label == UNKNOWN_LABEL:
+            top_up_feature(
+                connection,
+                assignment['project_id'],
+                assignment['layer_id'],
+                feature_id,
+            )
     return {
         'id': str(annotation['id']),
         'feature_id': feature_id,

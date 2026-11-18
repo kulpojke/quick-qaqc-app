@@ -63,6 +63,8 @@ class ReviewerAssignmentConfig:
     layer_id: str
     modes: tuple[str, ...]
     h3_indexes: tuple[str, ...]
+    # *!*! Most buildings --auto-assign-hex may put on this reviewer's list.
+    max_features: int | None = None
 
 
 @dataclass(frozen=True)
@@ -507,6 +509,15 @@ def _parse_reviewers(
                     f'{duplicate_modes_text}'
                 )
             seen_layer_modes.update((layer_id, mode) for mode in modes)
+            max_features = assignment_value.get('max_features')
+            if max_features is not None and (
+                isinstance(max_features, bool)
+                or not isinstance(max_features, int)
+                or max_features < 1
+            ):
+                raise ConfigError(
+                    f'{assignment_field}.max_features must be a positive integer'
+                )
             assignments.append(ReviewerAssignmentConfig(
                 layer_id=layer_id,
                 modes=modes,
@@ -515,6 +526,7 @@ def _parse_reviewers(
                     field=f'{assignment_field}.h3_indexes',
                     allowed_resolutions=layer.h3_resolutions,
                 ),
+                max_features=max_features,
             ))
         reviewers.append(ReviewerConfig(
             id=reviewer_id,

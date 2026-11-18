@@ -90,9 +90,10 @@ workflow:
     - annotation
     - editing
   reviewers:
-    # *!*! Order matters only with ./run.sh --auto-assign-hex: hexes are whole,
-    # *!*! so loads come out uneven, and heavier bundles go to reviewers earlier
-    # *!*! in this list. Without it, everyone gets every feature.
+    # *!*! Order matters only with ./run.sh --auto-assign-hex: when two
+    # *!*! reviewers have equal open work, the one earlier in this list gets
+    # *!*! the next hex. Without it, everyone gets every feature. Add
+    # *!*! `max_features: 50` under a buildings assignment to cap that list.
     - id: 'graysonplouffe@gmail.com'
       assignments:
         - layer: buildings
@@ -146,5 +147,7 @@ workflow:
       assignments:
         - layer: buildings
           modes: [annotation, editing]
+          # A few buildings to test with, not thousands.
+          max_features: 50
         - layer: dins
           modes: [annotation, editing]

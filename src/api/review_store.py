@@ -9,6 +9,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from src.api.auto_assign import UNKNOWN_LABEL, top_up_feature
 from src.api.database import database_url
 
 
@@ -196,6 +197,8 @@ WHERE reviewer.task_id = %(task_id)s
             AND assigned.reviewer_id = reviewer.reviewer_id
       )
   )
+  -- *!*! Hexes decide what a reviewer sees; a feature list decides what they label.
+  AND reviewer_may_label(reviewer.task_id, reviewer.reviewer_id, feature.id)
 FOR SHARE OF feature
 ''',
             {
@@ -286,4 +289,7 @@ WHERE id = %s
 ''',
                 [project_id],
             )
+            # *!*! A first "unknown" does not count, so find another reviewer now.
+            if mode == 'annotation' and label == UNKNOWN_LABEL:
+                top_up_feature(connection, project_id, layer_id, feature_id)
     return browser_annotation(annotation)

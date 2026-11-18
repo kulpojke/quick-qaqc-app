@@ -155,8 +155,8 @@ VALUES
             self.assertEqual(revised_response.status_code, 200)
             self.assertEqual(revised_response.json()['version'], 2)
             count = self.connection.execute(
-                'SELECT count(*) FROM annotations WHERE project_id = %s',
-                [self.project_id],
+                'SELECT count(*) FROM annotations WHERE project_id = %s AND task_id = %s',
+                [self.project_id, self.annotation_task],
             ).fetchone()[0]
             self.assertEqual(count, 2)
             history_count = self.connection.execute(
@@ -198,6 +198,55 @@ VALUES
                 stale_response.json()['detail']['current']['version'],
                 2,
             )
+
+    def test_feature_lists_limit_labelling_through_the_api(self):
+        '''*!*! In a task with feature lists, only listed reviewers may label.'''
+
+        from fastapi.testclient import TestClient
+
+        task_id = uuid4()
+        with self.connection.transaction():
+            self.connection.execute(
+                '''
+INSERT INTO tasks (id, project_id, layer_id, name, mode, labels, feature_lists)
+VALUES (%s, %s, 'buildings', 'Listed', 'annotation', ARRAY['damaged', 'unknown'], true)
+''',
+                [task_id, self.project_id],
+            )
+            self.connection.execute(
+                '''
+INSERT INTO task_reviewers (task_id, reviewer_id, all_features)
+VALUES (%s, 'carol', true), (%s, 'dave', true)
+''',
+                [task_id, task_id],
+            )
+            self.connection.execute(
+                '''
+INSERT INTO task_feature_assignments
+    (task_id, reviewer_id, project_id, layer_id, feature_id, reason)
+VALUES (%s, 'carol', %s, 'buildings', %s, 'allocated')
+''',
+                [task_id, self.project_id, self.feature_id],
+            )
+        version = self.connection.execute(
+            'SELECT version FROM features WHERE project_id = %s AND id = %s',
+            [self.project_id, self.feature_id],
+        ).fetchone()[0]
+        url = f'/api/tasks/{task_id}/features/{self.feature_id}/annotation'
+        body = {'label': 'damaged', 'feature_version_seen': version}
+        with TestClient(app) as client:
+            listed = client.put(url, headers={'X-Reviewer-ID': 'carol'}, json=body)
+            unlisted = client.put(url, headers={'X-Reviewer-ID': 'dave'}, json=body)
+            carol_features = client.get(
+                f'/api/tasks/{task_id}/features', headers={'X-Reviewer-ID': 'carol'},
+            ).json()['features']
+            dave_features = client.get(
+                f'/api/tasks/{task_id}/features', headers={'X-Reviewer-ID': 'dave'},
+            ).json()['features']
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(unlisted.status_code, 404)
+        self.assertEqual([feature['id'] for feature in carol_features], [self.feature_id])
+        self.assertEqual(dave_features, [])
 
     def test_polygon_creation_indexes_h3_and_soft_delete(self):
         '''*!*! Drawn polygons receive H3 rows and deletion preserves history.'''

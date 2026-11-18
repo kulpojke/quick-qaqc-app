@@ -19,6 +19,15 @@ these atomically with task permissions; the browser server loads the same
 allocations. The row cascades with project deletion. Removing the override
 through `--manual-assign-hex` restores YAML permissions on the next task sync.
 
+`006_feature_lists.sql` adds per-building annotation lists. Hexes still decide
+what a reviewer sees and edits; in an annotation task with `feature_lists`,
+`reviewer_may_label()` only lets a reviewer label buildings on their own list.
+`auto_hex_assignments.feature_lists` keeps the reviewer order, caps and H3
+resolution that runtime top-ups reuse; NULL marks an older whole-hex allocation.
+
+`007_expunged_reviewers.sql` records reviewers whose labels no longer count.
+Their annotations stay; counting, top-ups and exports skip them.
+
 ## Schema Overview
 
 | Table | Purpose |
@@ -31,6 +40,8 @@ through `--manual-assign-hex` restores YAML permissions on the next task sync.
 | `task_reviewers` | Reviewers assigned to tasks |
 | `task_h3_assignments` | H3 cells assigned to individual reviewers |
 | `auto_hex_assignments` | Saved automatic hex allocation and selection settings per project |
+| `task_feature_assignments` | Buildings each reviewer may label in a task with feature lists |
+| `expunged_reviewers` | Reviewers whose labels no longer count |
 | `annotations` | Each reviewer's current annotation for a feature |
 | `annotation_history` | Previous versions of changed annotations |
 | `feature_history` | Previous versions of edited features |

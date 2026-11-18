@@ -91,8 +91,8 @@ as the existing deployment (default `damagemap-qaqc`) to reuse its volume.
 
 ### Automatic hex assignments
 
-Assign approximately 25% of buildings, in whole hexes, to two distinct reviewers
-per hex (omit `2` for one reviewer):
+Select approximately 25% of buildings, in whole hexes, and have each one
+labelled by two distinct reviewers (omit `2` for one reviewer):
 
 ```bash
 ./run.sh spokane_config.yaml --auto-assign-hex 0.25 2
@@ -117,28 +117,72 @@ in the layer's `h3_resolutions`; add `--hex-resolution 8` to use a finer generat
 resolution. Large hexes can make the requested fraction approximate and leave
 some reviewers with no work.
 
-Only reviewers already assigned that layer in YAML participate, and their
-annotation/editing permissions are retained. Each selected hex goes to exactly
-`N` distinct reviewers. The allocator balances building counts, not hex counts,
-and gives heavier remaining bundles to reviewers earlier in YAML. The sample
-and allocation are deterministic. Startup prints selected building counts and
-each reviewer's workload.
+Only reviewers with annotation on that layer in YAML participate, and their
+annotation/editing permissions are retained. Each reviewer gets a **list of
+buildings** to label:
+
+- Every selected building needs `N` counted labels. The first `unknown` label
+  on a building does not count, so such a building ends up with `N + 1` labels.
+- Buildings a reviewer already labelled, or drew, stay on their list. Labels
+  from reviewers who have left the YAML still count.
+- The rest is shared out hex by hex to the reviewers with the least open work
+  (YAML order breaks ties), skipping anyone who already labelled the building.
+  Without labels, a whole hex goes to the same `N` people.
+- An optional `max_features` on a reviewer's building assignment caps their
+  list (labelled and drawn buildings count toward it). If caps leave buildings
+  short of reviewers, startup prints a warning with the number of open slots.
+
+Hexes stay the unit people see and edit: a reviewer gets every hex that holds
+a building on their list and sees all buildings in it. In annotation mode,
+buildings on other reviewers' lists are drawn as dashed grey outlines; they
+cannot be selected or labelled, and counts and navigation skip them.
+
+While people work, lists are topped up at once: a newly drawn building goes
+to its drawer (even over a cap) plus `N - 1` others, and a building's first
+`unknown` label brings one more reviewer. Reviewers who already have the hex
+are preferred. The new reviewer sees it on their next page load.
+
+Startup prints selected building counts and each reviewer's hexes and list
+size.
 
 Automatic assignments override manual `h3_indexes` without rewriting YAML.
 They persist in PostGIS and are reused on ordinary restarts, including when
-the same flags are repeated. Changing selection options explicitly generates
-a new allocation. Changes to reviewer eligibility/order or layer sources and
-resolutions require rerunning with the auto flags or restoring manual mode:
+the same flags are repeated. Changing selection options shares out again,
+keeping labelled and drawn buildings where they are. Changes to reviewer
+eligibility/order, caps, layer sources or resolutions make an ordinary restart
+stop; rerun with the auto flags (to share out again) or restore manual mode:
 
 ```bash
 ./run.sh spokane_config.yaml --manual-assign-hex
 ```
 
-Manual mode removes the saved override and reapplies YAML assignments. Feature
-edits and annotations are preserved in either mode. Bootstrap stores the
-override and task permissions in one transaction, and the app loads that same
-override for browser filtering. Reviewers assigned zero hexes receive no
-building access rather than the YAML empty-list shortcut for all features.
+Manual mode removes the saved override and the building lists and reapplies
+YAML assignments. Feature edits and annotations are preserved in either mode.
+Bootstrap stores the override, lists and task permissions in one transaction,
+and the app reads the same hexes for browser filtering on each page load.
+Reviewers assigned zero hexes receive no building access rather than the YAML
+empty-list shortcut for all features.
+
+A database whose saved allocation predates building lists keeps whole-hex
+labelling on ordinary restarts; the next run with the auto flags switches it
+to lists and keeps every existing label.
+
+#### Expunging a reviewer's labels
+
+To make one reviewer's labels stop counting (for example after bad work),
+without deleting anything:
+
+```bash
+PROJECT_CONFIG=camp_config_v2.yaml docker compose run --rm --no-deps \
+  bootstrap python -m src.api.expunge --yaml /project/camp_config_v2.yaml \
+  --reviewer someone@example.com --note "why"
+```
+
+Their labels stay in PostGIS but no longer count toward `N`, trigger top-ups,
+or appear in exports. Remove them from the YAML, then rerun `./run.sh` with
+the auto flags so their buildings go to others. `--restore` undoes it.
+Bootstrap refuses to run while an expunged reviewer is still in the YAML.
+Geometry edits are not undone.
 
 Set `PROJECT_CONFIG` in `.env` to the project YAML, or pass it when invoking
 Compose directly instead of using the script:
@@ -405,6 +449,9 @@ workflow:
           modes: [annotation]
           h3_indexes:
             - '8828308281fffff'
+          # Optional, used by --auto-assign-hex: at most 50 buildings on
+          # bob's list (for example to try the app without a full share).
+          max_features: 50
 ```
 
 Configured sources must be local or public/signed HTTP(S) GeoParquet objects.

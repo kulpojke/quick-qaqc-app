@@ -16,6 +16,7 @@ from psycopg.types.json import Jsonb
 from src.api.database import database_url
 from src.api.auto_assign import (
     add_assignment_arguments, assignment_options, prepare_assignments, validate_options,
+    write_feature_lists,
 )
 from src.fetch_overture_buildings import cog_bounds_wgs84
 from src.project_config import LayerConfig, ReviewConfig, load_review_config
@@ -516,13 +517,18 @@ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
             )
             feature_count += layer_count
             imported = imported or layer_imported
-        assigned_config = prepare_assignments(connection, config, auto_options, manual_assign)
+        assigned_config, feature_lists = prepare_assignments(
+            connection, config, auto_options, manual_assign,
+        )
         task_ids = sync_tasks(connection, assigned_config)
+        # *!*! Lists reference task_reviewers rows, so they follow the sync.
+        if feature_lists is not None:
+            write_feature_lists(connection, config, feature_lists, task_ids)
         # *!*! Populate planner statistics before the first browser reads new data.
         # *!*! Waiting for autovacuum can leave those reads running a poor plan.
         connection.execute(
             'ANALYZE features, feature_h3, feature_layers, '
-            'tasks, task_reviewers, task_h3_assignments'
+            'tasks, task_reviewers, task_h3_assignments, task_feature_assignments'
         )
     return BootstrapResult(
         project_id=config.project_id,

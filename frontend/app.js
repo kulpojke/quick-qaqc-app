@@ -370,6 +370,16 @@ function featureIsAssigned(feature, mode = null) {
   });
 }
 
+// *!*! With feature lists, buildings on other reviewers' lists stay visible
+// *!*! (so nobody redraws them) but cannot be labelled by this reviewer.
+function featureIsAnnotatable(feature) {
+  return feature.annotatable !== false;
+}
+
+function countsAsOwnWork(feature) {
+  return !isAnnotationMode() || featureIsAnnotatable(feature);
+}
+
 // *!*! Build reusable indexes once instead of rescanning every feature for every H3 cell.
 function indexFeatures() {
   featuresByLayer = new Map(layers.map((layer) => [layer.id, []]));
@@ -389,16 +399,21 @@ function indexFeatures() {
   });
 }
 
+// *!*! Counts, hex progress, and navigation cover only this reviewer's own work.
 function activeFeatures() {
   return (featuresByLayer.get(activeTool.layerId) || []).filter((feature) => (
-    featureIsAssigned(feature, taskModeForTool()) && featurePassesConfidenceFilter(feature)
+    featureIsAssigned(feature, taskModeForTool()) &&
+    featurePassesConfidenceFilter(feature) &&
+    countsAsOwnWork(feature)
   ));
 }
 
 function featuresInActiveCell(cell, resolution) {
   const indexed = featuresByH3.get(h3IndexKey(activeTool.layerId, resolution, cell)) || [];
   return indexed.filter((feature) => (
-    featureIsAssigned(feature, taskModeForTool()) && featurePassesConfidenceFilter(feature)
+    featureIsAssigned(feature, taskModeForTool()) &&
+    featurePassesConfidenceFilter(feature) &&
+    countsAsOwnWork(feature)
   ));
 }
 
@@ -850,6 +865,11 @@ function styleFeature(feature, activeLayer) {
       ? { color: '#052e16', fillColor: '#22c55e', fillOpacity: 0.92, opacity: 1, weight: 2 }
       : { color: '#111827', fillColor: '#fbbf24', fillOpacity: 0.96, opacity: 1, weight: 2 };
   }
+  else if (isAnnotationMode() && !featureIsAnnotatable(feature)) {
+    // *!*! Someone else's building: a dashed mid-grey outline, no fill,
+    // *!*! visible on both white roofs and dark ash.
+    style = { color: '#94a3b8', fillOpacity: 0, opacity: 1, weight: 1.6, dashArray: '5 3' };
+  }
   else if (complete) {
     style = { color: '#86efac', fillColor: '#16a34a', fillOpacity: 0.36, opacity: 1, weight: 1.8 };
   }
@@ -1167,6 +1187,9 @@ function onEachFeature(feature, layer, interactive) {
       if (event.originalEvent) {
         L.DomEvent.stopPropagation(event.originalEvent);
       }
+      if (isAnnotationMode() && !featureIsAnnotatable(feature)) {
+        return;
+      }
       selectFeature(feature, layer, !isAnnotationMode());
       layer.bringToFront();
     });
@@ -1187,6 +1210,9 @@ function featureTooltip(feature) {
     }
   } else {
     lines.push(`ID: ${featureId(feature)}`);
+  }
+  if (isAnnotationMode() && !featureIsAnnotatable(feature)) {
+    lines.push('On other reviewers\' lists');
   }
   const container = document.createElement('div');
   lines.forEach((text, index) => {

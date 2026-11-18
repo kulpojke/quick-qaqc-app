@@ -306,6 +306,27 @@ class ReviewConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, 'not enabled for layer'):
                 load_review_config(path)
 
+    def test_max_features_is_an_optional_positive_cap(self):
+        '''*!*! A reviewer can be limited to a few buildings for testing.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            config = load_review_config(self.write_config(Path(temp_dir), values))
+            self.assertIsNone(
+                config.reviewers[0].assignment_for('buildings', 'annotation').max_features
+            )
+            values['workflow']['reviewers'][0]['assignments'][0]['max_features'] = 50
+            config = load_review_config(self.write_config(Path(temp_dir), values))
+            self.assertEqual(
+                config.reviewers[0].assignment_for('buildings', 'annotation').max_features, 50
+            )
+            for bad in (0, -1, True, '50', 2.5):
+                with self.subTest(bad=bad):
+                    values['workflow']['reviewers'][0]['assignments'][0]['max_features'] = bad
+                    path = self.write_config(Path(temp_dir), values)
+                    with self.assertRaisesRegex(ConfigError, 'max_features'):
+                        load_review_config(path)
+
 
 class QaqcStoreTests(unittest.TestCase):
     '''*!*! Tests for database feature and review delegation.'''

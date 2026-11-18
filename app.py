@@ -279,8 +279,14 @@ def make_handler(
     review_config: ReviewConfig,
     store_factory=QaqcStore,
     identity_resolver=resolve_reviewer_identity,
+    config_loader=None,
 ):
-    '''*!*! Build a request-authenticated handler for one review project.'''
+    '''*!*! Build a request-authenticated handler for one review project.
+
+    `config_loader`, when given, returns the config with the current hex
+    assignments; the browser config uses it so hexes added by top-ups while
+    the app runs appear on the next page load.
+    '''
 
     stores = {}
     development_default = (
@@ -326,6 +332,8 @@ def make_handler(
         def frontend_config(self, reviewer: ReviewerConfig) -> dict[str, object]:
             '''*!*! Return reviewer-scoped browser runtime configuration.'''
 
+            if config_loader is not None:
+                reviewer = config_loader().reviewer(reviewer.id) or reviewer
             assigned_layer_ids = {
                 assignment.layer_id for assignment in reviewer.assignments
             }
@@ -688,9 +696,16 @@ def main() -> None:
         from src.api.auto_assign import saved_assignment_config
         from src.api.database import database_url
 
-        with psycopg.connect(database_url(), row_factory=dict_row) as connection:
-            review_config = saved_assignment_config(connection, review_config)
-        handler = make_handler(review_config)
+        yaml_config = review_config
+
+        def current_assignments() -> ReviewConfig:
+            '''*!*! Read the saved hexes, including any added by top-ups.'''
+
+            with psycopg.connect(database_url(), row_factory=dict_row) as connection:
+                return saved_assignment_config(connection, yaml_config)
+
+        review_config = current_assignments()
+        handler = make_handler(review_config, config_loader=current_assignments)
     except (OSError, RuntimeError, ValueError) as error:
         raise SystemExit(f'Could not load project features: {error}') from error
     server = ThreadingHTTPServer((args.host, args.port), handler)

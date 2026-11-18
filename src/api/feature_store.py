@@ -11,6 +11,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from src.api.auto_assign import top_up_feature
 from src.api.database import database_url
 
 
@@ -55,7 +56,24 @@ SELECT
               AND cell.feature_id = feature.id
         ),
         '{}'::jsonb
-    ) AS h3
+    ) AS h3,
+    -- *!*! Hexes decide what is shown; this says whether this reviewer may
+    -- *!*! label it (false for buildings on other reviewers' lists).
+    COALESCE(
+        (
+            SELECT reviewer_may_label(task.id, %(reviewer_id)s, feature.id)
+            FROM tasks AS task
+            JOIN task_reviewers AS annotator
+              ON annotator.task_id = task.id
+             AND annotator.reviewer_id = %(reviewer_id)s
+            WHERE task.project_id = feature.project_id
+              AND task.layer_id = feature.layer_id
+              AND task.mode = 'annotation'
+              AND task.active
+            LIMIT 1
+        ),
+        false
+    ) AS annotatable
 FROM features AS feature
 JOIN feature_layers AS layer
   ON layer.project_id = feature.project_id
@@ -121,6 +139,7 @@ ORDER BY feature.layer_id, feature.id
             'version': row['version'],
             'updated_by': row['updated_by'],
             'updated_at': row['updated_at'].isoformat(),
+            'annotatable': row['annotatable'],
         })
     return {'type': 'FeatureCollection', 'features': features}
 
@@ -570,6 +589,33 @@ INSERT INTO feature_h3 (
             'UPDATE projects SET revision = revision + 1, updated_at = now() WHERE id = %s',
             [project_id],
         )
+        # *!*! With feature lists: the drawer labels it, plus N - 1 others.
+        top_up_feature(connection, project_id, layer_id, feature_id, drawn_by=reviewer_id)
+        annotatable = connection.execute(
+            '''
+SELECT COALESCE(
+    (
+        SELECT reviewer_may_label(task.id, %(reviewer_id)s, %(feature_id)s)
+        FROM tasks AS task
+        JOIN task_reviewers AS annotator
+          ON annotator.task_id = task.id
+         AND annotator.reviewer_id = %(reviewer_id)s
+        WHERE task.project_id = %(project_id)s
+          AND task.layer_id = %(layer_id)s
+          AND task.mode = 'annotation'
+          AND task.active
+        LIMIT 1
+    ),
+    false
+) AS annotatable
+''',
+            {
+                'reviewer_id': reviewer_id,
+                'feature_id': feature_id,
+                'project_id': project_id,
+                'layer_id': layer_id,
+            },
+        ).fetchone()['annotatable']
 
     return {
         'type': 'Feature',
@@ -581,6 +627,7 @@ INSERT INTO feature_h3 (
         'updated_by': created['updated_by'],
         'updated_at': created['updated_at'].isoformat(),
         'h3': h3_cells,
+        'annotatable': annotatable,
     }
 
 
