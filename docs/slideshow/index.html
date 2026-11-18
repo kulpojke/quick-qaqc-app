@@ -17,6 +17,8 @@
   ul { margin: 0; padding-left: 1.2em; }
   li { margin-bottom: 1.2vh; }
   .muted { color: #64748b; }
+  .small li { font-size: 2.5vh; margin-bottom: 1vh; }
+  figure svg { width: 100%; flex: 1; min-height: 0; }
   .title { justify-content: center; }
   .row { display: flex; gap: 3vw; flex: 1; min-height: 0; align-items: center; }
   .row > * { flex: 1; min-width: 0; }
@@ -66,14 +68,14 @@
 <section>
   <h2>Lidar: buildings from the pre-fire point cloud</h2>
   <div class="row">
-    <ul style="flex: 0.8">
+    <ul class="small" style="flex: 0.55">
       <li>Points streamed window by window from the public 3DEP lidar (USGS, July 2018)</li>
       <li>Roofs found from height above the ground; walls straightened</li>
       <li>Rules against trees, wires, rocks, cliffs and bridges</li>
       <li>Flight dates checked: only buildings flown <i>before</i> the fire</li>
       <li><b>15,517 buildings</b> in the imagery area: 11,780 buildings and 3,737 sheds (under 40 m²)</li>
     </ul>
-    <figure>
+    <figure style="flex: 1.6">
       <img src="img/lidar_footprints.png" alt="Lidar building footprints over NAIP imagery and lidar hillshade">
       <figcaption>Footprints over NAIP 2018 and the lidar hillshade: orange as traced from the points, red straightened</figcaption>
     </figure>
@@ -93,10 +95,68 @@
       <figcaption>Pre-fire NAIP 2018: the same footprint fits the house</figcaption>
     </figure>
   </div>
-  <p style="text-align: center; margin: 2vh 0 0">The post-fire imagery is shifted, so it needs rubber-sheeting to line up</p>
+  <p style="text-align: center; margin: 2vh 0 0">The post-fire imagery is shifted: how much, and why?</p>
 </section>
 
 <!-- 5 -->
+<section>
+  <h2>Georeferencing: how far off is the post-fire mosaic?</h2>
+  <div class="row">
+    <ul class="small" style="flex: 0.6">
+      <li>Edges in the image matched to edges in the lidar heights, in 1,192 cells; <b>726 trusted</b></li>
+      <li>In the north the image is off to the north, in the south to the south, in the middle hardly at all</li>
+      <li>Median <b>6.7 m</b>, up to <b>14 m</b> at the edges</li>
+      <li>One smooth pattern: a linear model (offset and scale) leaves a median of 0.5 m, the size of a pixel we measured at</li>
+    </ul>
+    <figure style="flex: 1.6">
+      <img src="img/georef_shifts.png" alt="Arrows showing the measured shift of the mosaic in each cell">
+      <figcaption>The trusted shifts over the mosaic; arrows drawn 10× longer, colour = true shift</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 6 -->
+<section>
+  <h2>The likely cause: one radius where the Earth has two</h2>
+  <div class="row">
+    <figure>
+      <svg viewBox="0 0 500 400" role="img" aria-label="A sphere with one radius R">
+        <line x1="250" y1="50" x2="250" y2="390" stroke="#94a3b8" stroke-dasharray="6 5"/>
+        <line x1="80" y1="215" x2="420" y2="215" stroke="#94a3b8" stroke-dasharray="6 5"/>
+        <circle cx="250" cy="215" r="150" fill="none" stroke="#1e293b" stroke-width="3"/>
+        <line x1="250" y1="215" x2="364.9" y2="118.6" stroke="#475569" stroke-width="5"/>
+        <circle cx="364.9" cy="118.6" r="6" fill="#1e293b"/>
+        <text x="288" y="150" font-size="26" font-weight="700" fill="#475569" text-anchor="middle">R</text>
+        <text x="10" y="30" font-size="18" fill="#475569">R: north–south and east–west</text>
+      </svg>
+      <figcaption>Sphere: one radius for both directions</figcaption>
+    </figure>
+    <figure>
+      <svg viewBox="0 0 500 400" role="img" aria-label="An ellipsoid with two radii of curvature, M and N">
+        <line x1="250" y1="65" x2="250" y2="390" stroke="#94a3b8" stroke-dasharray="6 5"/>
+        <line x1="30" y1="215" x2="470" y2="215" stroke="#94a3b8" stroke-dasharray="6 5"/>
+        <ellipse cx="250" cy="215" rx="200" ry="140" fill="none" stroke="#1e293b" stroke-width="3"/>
+        <line x1="422.4" y1="144.1" x2="250" y2="288.8" stroke="#ea580c" stroke-width="5"/>
+        <line x1="426.9" y1="138.7" x2="319.8" y2="228.6" stroke="#2563eb" stroke-width="5"/>
+        <circle cx="250" cy="288.8" r="5" fill="#ea580c"/>
+        <circle cx="319.8" cy="228.6" r="5" fill="#2563eb"/>
+        <circle cx="422.4" cy="144.1" r="6" fill="#1e293b"/>
+        <text x="353" y="172" font-size="26" font-weight="700" fill="#2563eb" text-anchor="middle">M</text>
+        <text x="302" y="292" font-size="26" font-weight="700" fill="#ea580c" text-anchor="middle">N</text>
+        <text x="10" y="30" font-size="18" fill="#2563eb">M: north–south (meridian)</text>
+        <text x="10" y="54" font-size="18" fill="#ea580c">N: east–west (prime vertical)</text>
+      </svg>
+      <figcaption>Ellipsoid (flattening exaggerated): two radii, N longer than M</figcaption>
+    </figure>
+  </div>
+  <ul class="small" style="margin-top: 2vh">
+    <li>The image is <b>too tall north–south (+0.28%)</b> and <b>too narrow east–west (−0.13%)</b>: 11 m and 5 m at 4 km from the centre</li>
+    <li>Ratio of the two scales: <b>1.00405</b>. N / M at Paradise (WGS 84): <b>1.00398</b>. They agree to 1 part in 10,000: a strong hint, not a proof</li>
+    <li>Fix: a new geotransform (corner and pixel size), no pixel resampled. Shifts drop from a median of 6.7 m to 0.5 m</li>
+  </ul>
+</section>
+
+<!-- 7 -->
 <section>
   <h2>Annotation data flow</h2>
   <div class="row" style="flex-direction: column; justify-content: center">
