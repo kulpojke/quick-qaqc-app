@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camp Fire QAQC</title>
+<style>
+  /* One slide fills the screen; arrow keys, space or a click move on. */
+  html, body { margin: 0; height: 100%; background: #fff; color: #1e293b;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  section { display: none; box-sizing: border-box; height: 100vh; padding: 5vh 6vw;
+    flex-direction: column; }
+  section.active { display: flex; }
+  h1 { font-size: 6vh; margin: 0 0 3vh; }
+  h2 { font-size: 5vh; margin: 0 0 3vh; border-bottom: 3px solid #e2e8f0; padding-bottom: 1.5vh; }
+  p, li { font-size: 3.2vh; line-height: 1.45; }
+  ul { margin: 0; padding-left: 1.2em; }
+  li { margin-bottom: 1.2vh; }
+  .muted { color: #64748b; }
+  .title { justify-content: center; }
+  .row { display: flex; gap: 3vw; flex: 1; min-height: 0; align-items: center; }
+  .row > * { flex: 1; min-width: 0; }
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center;
+    height: 100%; min-height: 0; }
+  figure img { max-width: 100%; max-height: 100%; min-height: 0; object-fit: contain; }
+  figcaption { font-size: 2.6vh; color: #64748b; margin-top: 1vh; text-align: center; }
+  .steps { display: flex; gap: 2vw; align-items: stretch; margin-bottom: 3vh; }
+  .step { flex: 1; border: 2px solid #cbd5e1; border-radius: 10px; padding: 2vh 1.5vw; }
+  .step b { display: block; font-size: 3.4vh; margin-bottom: 1vh; }
+  .step span { font-size: 2.8vh; line-height: 1.4; display: block; }
+  .arrow { align-self: center; font-size: 5vh; color: #94a3b8; }
+  .mermaid { display: flex; justify-content: center; font-size: 2.6vh; }
+  #count { position: fixed; right: 2vw; bottom: 2vh; font-size: 2vh; color: #94a3b8; }
+</style>
+</head>
+<body>
+
+<!-- 1 -->
+<section class="title">
+  <h1>Camp Fire building damage review</h1>
+  <p>Preparing the buildings, lining up the imagery, and the review app</p>
+  <p class="muted">Paradise, CA · 2018 Camp Fire</p>
+</section>
+
+<!-- 2 -->
+<section>
+  <h2>Steps to prepare the data</h2>
+  <div class="steps">
+    <div class="step"><b>1. Lidar</b>
+      <span>Buildings found in the pre-fire 3DEP lidar (flown July 2018): 15,517 in the imagery area</span></div>
+    <div class="arrow">+</div>
+    <div class="step"><b>2. Overture</b>
+      <span>Overture building footprints (2024): 2,523. Most burned buildings are no longer in it</span></div>
+    <div class="arrow">+</div>
+    <div class="step"><b>3. Previous reviewers</b>
+      <span>623 buildings drawn by hand in an earlier review, merged with Overture</span></div>
+  </div>
+  <ul>
+    <li><b>Merge:</b> where they overlap, the lidar building wins; Overture and hand-drawn buildings fill the gaps</li>
+    <li>Western Paradise was only flown <i>after</i> the fire, so there the buildings come from Overture and the reviewers</li>
+    <li><b>Result: 16,677 buildings</b> (15,517 lidar, 780 Overture, 380 hand-drawn); 150 doubtful matches flagged as "grey zone"</li>
+  </ul>
+</section>
+
+<!-- 3 -->
+<section>
+  <h2>Lidar: buildings from the pre-fire point cloud</h2>
+  <div class="row">
+    <ul style="flex: 0.8">
+      <li>Points streamed window by window from the public 3DEP lidar (USGS, July 2018)</li>
+      <li>Roofs found from height above the ground; walls straightened</li>
+      <li>Rules against trees, wires, rocks, cliffs and bridges</li>
+      <li>Flight dates checked: only buildings flown <i>before</i> the fire</li>
+      <li><b>15,517 buildings</b> in the imagery area: 11,780 buildings and 3,737 sheds (under 40 m²)</li>
+    </ul>
+    <figure>
+      <img src="img/lidar_footprints.png" alt="Lidar building footprints over NAIP imagery and lidar hillshade">
+      <figcaption>Footprints over NAIP 2018 and the lidar hillshade: orange as traced from the points, red straightened</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 4 -->
+<section>
+  <h2>Georeferencing the post-fire imagery</h2>
+  <div class="row">
+    <figure>
+      <img src="img/why_rubber_sheet_0.png" alt="Post-fire imagery with a building footprint">
+      <figcaption>Post-fire: the burned house sits off the footprint</figcaption>
+    </figure>
+    <figure>
+      <img src="img/why_rubber_sheet_1.png" alt="Pre-fire NAIP imagery with the same footprint">
+      <figcaption>Pre-fire NAIP 2018: the same footprint fits the house</figcaption>
+    </figure>
+  </div>
+  <p style="text-align: center; margin: 2vh 0 0">The post-fire imagery is shifted, so it needs rubber-sheeting to line up</p>
+</section>
+
+<!-- 5 -->
+<section>
+  <h2>Annotation data flow</h2>
+  <div class="row" style="flex-direction: column; justify-content: center">
+<pre class="mermaid">
+flowchart LR
+    input[("Cloudflare R2<br/>GeoParquet buildings<br/>and imagery")]
+    app["Review app<br/>PostGIS, 8 reviewers<br/>label and edit"]
+    output[("Cloudflare R2<br/>exported GeoParquet<br/>buildings and labels")]
+    input --> app --> output
+</pre>
+    <ul style="flex: 0">
+      <li>Every building is labelled by 2 reviewers</li>
+      <li>Edits are versioned; exports are new snapshots, the inputs are never overwritten</li>
+    </ul>
+  </div>
+</section>
+
+<div id="count"></div>
+
+<script type="module">
+  // Navigation: right arrow, space, page down or a click = next; left arrow = back.
+  const slides = [...document.querySelectorAll('section')];
+  // The chart on slide 5 needs the internet once; without it, its text still shows.
+  const mermaidReady = import('https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs')
+    .then(({ default: mermaid }) => {
+      mermaid.initialize({ startOnLoad: false, theme: 'neutral', flowchart: { useMaxWidth: false } });
+      return mermaid;
+    });
+  let current = Math.min(Math.max(parseInt(location.hash.slice(1)) || 1, 1), slides.length) - 1;
+  function show(index) {
+    current = Math.min(Math.max(index, 0), slides.length - 1);
+    slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+    document.getElementById('count').textContent = `${current + 1} / ${slides.length}`;
+    history.replaceState(null, '', `#${current + 1}`);
+    // Draw a chart only once its slide is visible: hidden charts come out the wrong size.
+    const charts = [...slides[current].querySelectorAll('.mermaid:not([data-processed])')];
+    if (charts.length) mermaidReady.then((mermaid) => mermaid.run({ nodes: charts }));
+  }
+  document.addEventListener('keydown', (event) => {
+    if (['ArrowRight', 'ArrowDown', ' ', 'PageDown'].includes(event.key)) show(current + 1);
+    if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) show(current - 1);
+  });
+  document.addEventListener('click', () => show(current + 1));
+  show(current);
+</script>
+</body>
+</html>
