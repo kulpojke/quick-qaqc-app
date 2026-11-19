@@ -864,14 +864,15 @@ function updateH3Grid() {
   bringActiveLayerToFront();
 }
 
-// *!*! High-contrast point fills remain legible over both dark and light aerial imagery.
+// *!*! High-contrast point fills remain legible over both dark and light aerial imagery:
+// *!*! hot pink with a white rim stands out on roofs, ash, trees and roads.
 function styleFeature(feature, activeLayer) {
   const complete = annotationIsComplete(annotationFor(feature));
   let style;
   if (featureIsPoint(feature)) {
     style = complete
       ? { color: '#052e16', fillColor: '#22c55e', fillOpacity: 0.92, opacity: 1, weight: 2 }
-      : { color: '#111827', fillColor: '#fbbf24', fillOpacity: 0.96, opacity: 1, weight: 2 };
+      : { color: '#ffffff', fillColor: '#ff1493', fillOpacity: 1, opacity: 1, weight: 1.5 };
   }
   else if (isAnnotationMode() && !featureIsAnnotatable(feature)) {
     // *!*! Someone else's building: a dashed mid-grey outline, no fill,
@@ -884,7 +885,8 @@ function styleFeature(feature, activeLayer) {
   else {
     style = { color: '#f8fafc', fillColor: '#0ea5e9', fillOpacity: 0.24, opacity: 0.96, weight: 1.5 };
   }
-  if (!activeLayer) {
+  // *!*! Points stay bright as context too: they help while editing polygons.
+  if (!activeLayer && !featureIsPoint(feature)) {
     style.opacity = 0.52;
     style.fillOpacity *= 0.55;
   }
@@ -1247,6 +1249,17 @@ function bringActiveLayerToFront() {
   if (activeGroup) {
     activeGroup.bringToFront();
   }
+  // *!*! Context points go on top of the polygons. They cannot be clicked
+  // *!*! there, so clicks still reach the polygon underneath.
+  layers
+    .filter((layer) => layer.id !== activeTool.layerId &&
+      layer.geometryTypes.some((type) => ['Point', 'MultiPoint'].includes(type)))
+    .forEach((layer) => {
+      const group = featureLayerGroups.get(layer.id);
+      if (group) {
+        group.bringToFront();
+      }
+    });
   if (selectedFeatureMarker) {
     selectedFeatureMarker.bringToFront();
   }
@@ -1266,7 +1279,7 @@ function addFeatureLayer(layer) {
       ...styleFeature(feature, active),
       bubblingMouseEvents: false,
       interactive: active,
-      radius: active ? 6 : 4,
+      radius: active ? 6 : 5,
     }),
     onEachFeature: (feature, featureLayer) => onEachFeature(feature, featureLayer, active),
   }).addTo(map);
