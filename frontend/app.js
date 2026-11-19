@@ -97,7 +97,8 @@ function layerSupportsPolygonEditing(layer) {
     layer.modes.includes('editing') &&
     layer.geometryTypes.some((type) => ['Polygon', 'MultiPolygon'].includes(type)) &&
     layer.editing &&
-    (layer.editing.move || layer.editing.reshape || layer.editing.create || layer.editing.delete)
+    (layer.editing.move || layer.editing.reshape || layer.editing.rotate ||
+      layer.editing.create || layer.editing.delete)
   );
 }
 
@@ -112,6 +113,9 @@ function availableTools(layer) {
     }
     if (layer.editing.reshape) {
       tools.push({ mode: 'polygon-reshape', label: 'Edit vertices' });
+    }
+    if (layer.editing.rotate) {
+      tools.push({ mode: 'polygon-rotate', label: 'Rotate polygons' });
     }
     if (layer.editing.delete) {
       tools.push({ mode: 'polygon-delete', label: 'Delete polygons' });
@@ -164,6 +168,10 @@ function isPolygonReshapeMode() {
   return activeTool.mode === 'polygon-reshape';
 }
 
+function isPolygonRotateMode() {
+  return activeTool.mode === 'polygon-rotate';
+}
+
 function isPolygonDeleteMode() {
   return activeTool.mode === 'polygon-delete';
 }
@@ -173,7 +181,7 @@ function isPolygonCreateMode() {
 }
 
 function isPolygonGeometryMode() {
-  return isPolygonMoveMode() || isPolygonReshapeMode();
+  return isPolygonMoveMode() || isPolygonReshapeMode() || isPolygonRotateMode();
 }
 
 function activeLayerDefinition() {
@@ -897,7 +905,11 @@ function disableSelectedGeometryEditing() {
   selectedFeatureLayer.off('pm:edit', capturePolygonDraft);
   selectedFeatureLayer.off('pm:dragend', capturePolygonDraft);
   selectedFeatureLayer.off('pm:dragend', capturePointDraft);
+  selectedFeatureLayer.off('pm:rotateend', capturePolygonDraft);
   selectedFeatureLayer.pm.disable();
+  if (selectedFeatureLayer.pm.rotateEnabled && selectedFeatureLayer.pm.rotateEnabled()) {
+    selectedFeatureLayer.pm.disableRotate();
+  }
   if (selectedFeatureLayer.pm.layerDragEnabled()) {
     selectedFeatureLayer.pm.disableLayerDrag();
   }
@@ -947,6 +959,12 @@ function enablePolygonEditing() {
   if (isPolygonMoveMode() && layer.editing.move) {
     selectedFeatureLayer.pm.enableLayerDrag();
     selectedFeatureLayer.on('pm:dragend', capturePolygonDraft);
+  }
+  // *!*! Geoman draws a handle at each corner; dragging one turns the
+  // *!*! polygon around its centre without changing its shape.
+  if (isPolygonRotateMode() && layer.editing.rotate) {
+    selectedFeatureLayer.pm.enableRotate();
+    selectedFeatureLayer.on('pm:rotateend', capturePolygonDraft);
   }
 }
 
@@ -1318,6 +1336,17 @@ async function loadFeatures() {
   renderFeatureLayers(true);
 }
 
+// *!*! The server checks each edit against the layer's YAML editing flags.
+function geometryOperation() {
+  if (isPolygonReshapeMode()) {
+    return 'reshape';
+  }
+  if (isPolygonRotateMode()) {
+    return 'rotate';
+  }
+  return 'move';
+}
+
 // *!*! Save one staged edit without advancing the cell-local inspection queue.
 async function saveGeometry() {
   if (!selectedFeature || !draftGeometry || !geometryDirty) {
@@ -1331,7 +1360,7 @@ async function saveGeometry() {
       id: featureId(feature),
       layer_id: feature.layer_id,
       expected_version: feature.version,
-      operation: isPolygonReshapeMode() ? 'reshape' : 'move',
+      operation: geometryOperation(),
       geometry: draftGeometry,
     }),
   });

@@ -265,13 +265,13 @@ FOR UPDATE OF feature
                 HTTPStatus.UNPROCESSABLE_ENTITY,
             )
         editing = assignment['editing']
-        if operation not in {'', 'move', 'reshape'}:
+        if operation not in {'', 'move', 'reshape', 'rotate'}:
             raise FeatureStoreError(
                 'Unknown geometry editing operation',
                 HTTPStatus.BAD_REQUEST,
             )
         if geometry_type == 'Point' and (
-            operation == 'reshape' or not editing.get('move')
+            operation in {'reshape', 'rotate'} or not editing.get('move')
         ):
             raise FeatureStoreError(
                 'Point movement is disabled for this layer',
@@ -288,7 +288,14 @@ FOR UPDATE OF feature
                     'Polygon vertex editing is disabled for this layer',
                     HTTPStatus.FORBIDDEN,
                 )
-            if not operation and not editing.get('move') and not editing.get('reshape'):
+            if operation == 'rotate' and not editing.get('rotate'):
+                raise FeatureStoreError(
+                    'Polygon rotation is disabled for this layer',
+                    HTTPStatus.FORBIDDEN,
+                )
+            if not operation and not (
+                editing.get('move') or editing.get('reshape') or editing.get('rotate')
+            ):
                 raise FeatureStoreError(
                     'Polygon editing is disabled for this layer',
                     HTTPStatus.FORBIDDEN,

@@ -306,6 +306,18 @@ class ReviewConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, 'not enabled for layer'):
                 load_review_config(path)
 
+    def test_rotate_is_an_optional_editing_capability(self):
+        '''*!*! Rotation is off unless the YAML turns it on, and counts on its own.'''
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            values = self.base_config()
+            config = load_review_config(self.write_config(Path(temp_dir), values))
+            self.assertFalse(config.layers[1].editing.rotate)
+            values['layers'][1]['editing'] = {'rotate': True}
+            config = load_review_config(self.write_config(Path(temp_dir), values))
+            self.assertTrue(config.layers[1].editing.rotate)
+            self.assertFalse(config.layers[1].editing.move)
+
     def test_max_features_is_an_optional_positive_cap(self):
         '''*!*! A reviewer can be limited to a few buildings for testing.'''
 

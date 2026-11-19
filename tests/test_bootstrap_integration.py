@@ -19,6 +19,7 @@ from src.api.bootstrap import bootstrap_project
 from src.api.auto_assign import AutoAssignOptions, saved_assignment_config
 from psycopg.rows import dict_row
 from src.api.feature_store import (
+    FeatureStoreError,
     create_project_polygon,
     read_project_features,
     update_project_geometry,
@@ -109,6 +110,7 @@ FROM (
                     'editing': {
                         'move': True,
                         'reshape': True,
+                        'rotate': True,
                         'create': True,
                     },
                 },
@@ -204,6 +206,36 @@ FROM (
                             ]],
                         },
                     )
+                    # *!*! A quarter turn of the edited square about its centre.
+                    rotated_polygon = update_project_geometry(
+                        project_id,
+                        'alice',
+                        'buildings',
+                        'one',
+                        2,
+                        {
+                            'type': 'Polygon',
+                            'coordinates': [[
+                                [0.1, 1.0],
+                                [1.0, 1.0],
+                                [1.0, 0.1],
+                                [0.1, 0.1],
+                                [0.1, 1.0],
+                            ]],
+                        },
+                        operation='rotate',
+                    )
+                    # *!*! Points cannot be rotated, whatever the layer allows.
+                    with self.assertRaises(FeatureStoreError) as point_rotation:
+                        update_project_geometry(
+                            project_id,
+                            'alice',
+                            'points',
+                            'point-inside',
+                            2,
+                            {'type': 'Point', 'coordinates': [1.5, 1.5]},
+                            operation='rotate',
+                        )
                     created_polygon = create_project_polygon(
                         project_id,
                         'alice',
@@ -250,12 +282,14 @@ ORDER BY layer_id
                 self.assertEqual(moved_point['version'], 2)
                 self.assertEqual(moved_point['geometry']['coordinates'], [1.75, 1.75])
                 self.assertEqual(edited_polygon['version'], 2)
+                self.assertEqual(rotated_polygon['version'], 3)
+                self.assertEqual(point_rotation.exception.status, 403)
                 self.assertEqual(created_polygon['version'], 1)
                 self.assertEqual(
                     reviews['["points","point-inside"]']['qa_notes'],
                     'database review',
                 )
-                self.assertEqual(feature_rows, [('buildings', 3, 2), ('points', 1, 2)])
+                self.assertEqual(feature_rows, [('buildings', 3, 3), ('points', 1, 2)])
                 self.assertEqual(h3_count, 24)
             finally:
                 with psycopg.connect(database_url) as connection:

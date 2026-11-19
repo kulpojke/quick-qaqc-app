@@ -54,6 +54,7 @@ layers:
     editing:
       move: true
       reshape: true
+      rotate: true
       create: true
       delete: true
 

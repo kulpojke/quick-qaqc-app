@@ -407,6 +407,8 @@ layers:
     editing:
       move: true
       reshape: true
+      # Turn a polygon around its centre by dragging a corner handle.
+      rotate: true
 
   - id: observations
     source: 'https://example.com/points.parquet'
@@ -471,7 +473,7 @@ python src/fetch_overture_buildings.py \
 Annotation and editing use independent tasks per layer; QA/QC is no longer a
 separate configured mode. The layer panel provides annotation plus
 capability-specific geometry modes for each eligible layer: point movement and
-polygon movement, vertex editing, deletion, and drawing. The active layer is
+polygon movement, vertex editing, rotation, deletion, and drawing. The active layer is
 interactive and rendered above visible context layers. Point layers remain
 hidden until an H3 cell is selected. Geometry changes are saved with optimistic
 version checking; only annotation saves automatically advance to the next

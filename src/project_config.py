@@ -28,6 +28,8 @@ class EditingConfig:
 
     move: bool = False
     reshape: bool = False
+    # *!*! Turn a polygon around its centre, keeping its shape.
+    rotate: bool = False
     create: bool = False
     delete: bool = False
 
@@ -330,6 +332,7 @@ def _parse_editing(layer: dict, position: int) -> EditingConfig:
     return EditingConfig(
         move=_optional_bool(value, 'move'),
         reshape=_optional_bool(value, 'reshape'),
+        rotate=_optional_bool(value, 'rotate'),
         create=_optional_bool(value, 'create'),
         delete=_optional_bool(value, 'delete'),
     )

@@ -281,6 +281,7 @@ def patch_feature(
             geometry_type in {'Polygon', 'MultiPolygon'}
             and not editing.get('move')
             and not editing.get('reshape')
+            and not editing.get('rotate')
         ):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
