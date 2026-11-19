@@ -71,10 +71,14 @@ layers:
         - STRUCTURETYPE
         - SITEADDRESS
         - INCIDENTNAME
+      # Shown on mouse hover.
+      hover:
+        - DAMAGE
+        - STRUCTURETYPE
     h3_prefix: h3_r
     h3_resolutions: [5, 6, 7, 8, 9, 10]
+    # Points are only moved, not labelled.
     modes:
-      - annotation
       - editing
     editing:
       move: true
@@ -99,49 +103,49 @@ workflow:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'sampflugh@gmail.com'
       assignments:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'ethanguilhamet@gmail.com'
       assignments:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'asophiahoang@gmail.com'
       assignments:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'sophie.fioravanti@gmail.com'
       assignments:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'charles.b.higley@gmail.com'
       assignments:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'geoff.fricker@gmail.com'
       assignments:
         - layer: buildings
           modes: [annotation, editing]
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
 
     - id: 'michaelhuggins@protonmail.com'
       assignments:
@@ -150,4 +154,4 @@ workflow:
           # A few buildings to test with, not thousands.
           max_features: 50
         - layer: dins
-          modes: [annotation, editing]
+          modes: [editing]
