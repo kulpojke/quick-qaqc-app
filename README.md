@@ -112,7 +112,7 @@ column or invalid non-null value stops assignment. The fraction must be between
 
 Assignment runs separately for each polygon layer, using its current,
 non-deleted, COG-filtered PostGIS buildings and generated H3 indexes. Point
-layers retain their YAML assignments. The default resolution is the coarsest
+layers follow the building hexes (see below). The default resolution is the coarsest
 in the layer's `h3_resolutions`; add `--hex-resolution 8` to use a finer generated
 resolution. Large hexes can make the requested fraction approximate and leave
 some reviewers with no work.
@@ -137,10 +137,19 @@ a building on their list and sees all buildings in it. In annotation mode,
 buildings on other reviewers' lists are drawn as dashed grey outlines; they
 cannot be selected or labelled, and counts and navigation skip them.
 
+Point layers (such as DINS) follow the hexes: a reviewer sees and moves the
+points in their building hexes, like everyone else with that hex, so each
+point is usually seen by `N` reviewers. Two people moving the same point get
+the usual version check. A point assignment with its own `h3_indexes` in the
+YAML keeps that list. The point layer must generate the hex resolution
+(`--hex-resolution`), or the run stops. A reviewer with no building hexes
+sees no points.
+
 While people work, lists are topped up at once: a newly drawn building goes
 to its drawer (even over a cap) plus `N - 1` others, and a building's first
 `unknown` label brings one more reviewer. Reviewers who already have the hex
-are preferred. The new reviewer sees it on their next page load.
+are preferred. The new reviewer sees it, and the points in its hex, on their
+next page load.
 
 Startup prints selected building counts and each reviewer's hexes and list
 size.

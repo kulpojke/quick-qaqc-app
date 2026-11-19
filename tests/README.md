@@ -15,9 +15,9 @@ database and are skipped when `TEST_DATABASE_URL` is absent.
 | `test_api.py` | API models, development and Cloudflare identity handling, response shaping, and migration checksums without a database |
 | `test_api_integration.py` | Independent multi-reviewer annotations, annotation history, successful feature edits, stale-version conflicts, and feature-list labelling in PostGIS |
 | `test_bootstrap.py` | Multi-reviewer assignment sync, stable source identities, COG filtering, H3 generation, and deterministic tasks |
-| `test_auto_assign.py` | The counting rule (first `unknown` free), per-building lists, caps, whole-hex fraction/confidence selection, signature compatibility, CLI validation, and browser permissions |
+| `test_auto_assign.py` | The counting rule (first `unknown` free), per-building lists, caps, whole-hex fraction/confidence selection, signature compatibility, points following building hexes, CLI validation, and browser permissions |
 | `test_bootstrap_integration.py` | Transactional multi-layer import, out-of-COG filtering, database reviews, automatic assignment access, manual reset, and preservation across repeated startup |
-| `test_feature_lists_integration.py` | Building lists in PostGIS: label permissions, unknown and drawing top-ups, re-share after a reviewer leaves, caps, upgrade from whole-hex allocations, and expunging |
+| `test_feature_lists_integration.py` | Building lists in PostGIS: label permissions, unknown and drawing top-ups, re-share after a reviewer leaves, caps, points following hexes and top-ups, upgrade from whole-hex allocations, and expunging |
 | `test_export.py` | Revisioned feature/annotation snapshots, join keys, GeoParquet metadata, empty layers, and automatic time/edit thresholds |
 | `test_r2_export.py` | In-memory object publication, readback checksums, annotation-only manifests, failed uploads, retryable retention, stale snapshots, and source protection |
 | `test_run_script.py` | Runs the deployment script against a recording Docker stub to verify path handling, failure stops, and database-preserving update order |

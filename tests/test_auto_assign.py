@@ -224,23 +224,45 @@ class PermissionTests(unittest.TestCase):
         self.assertNotEqual(config_signature(config, ['dave']), earlier_hash)
 
     def test_empty_results_do_not_grant_all_feature_access(self):
-        '''*!*! Empty auto assignments disappear while context-layer permissions survive.'''
+        '''*!*! Empty auto assignments disappear, and so do the points that follow them.'''
 
         config = self.config()
         allocations = {'buildings': {reviewer.id: [] for reviewer in config.reviewers}}
         effective = apply_assignments(config, allocations)
-        for before, after in zip(config.reviewers, effective.reviewers):
-            self.assertEqual(after.assignments, tuple(
-                assignment for assignment in before.assignments if assignment.layer_id != 'buildings'
-            ))
+        for after in effective.reviewers:
+            self.assertEqual(after.assignments, ())
         connection = MagicMock()
         sync_tasks(connection, effective)
         task_inserts = [call for call in connection.execute.call_args_list
                         if 'INSERT INTO task_reviewers' in call.args[0]]
         from src.api.bootstrap import task_id_for
-        polygon_tasks = {task_id_for(config.project_id, 'buildings', mode)
-                         for mode in ('annotation', 'editing')}
+        polygon_tasks = {task_id_for(config.project_id, layer, mode)
+                         for layer in ('buildings', 'points') for mode in ('annotation', 'editing')}
         self.assertTrue(all(call.args[1][0] not in polygon_tasks for call in task_inserts))
+
+    def test_point_layers_follow_building_hexes(self):
+        '''*!*! Points show in the reviewer's building hexes; an own YAML list wins.'''
+
+        import h3
+        first, second = h3.latlng_to_cell(0.5, 0.5, 5), h3.latlng_to_cell(1.5, 1.5, 5)
+        config = self.config()
+        carol = config.reviewers[2]
+        own = tuple(replace(assignment, h3_indexes=(second,)) if assignment.layer_id == 'points'
+                    else assignment for assignment in carol.assignments)
+        config = replace(config, reviewers=(*config.reviewers[:2], replace(carol, assignments=own)))
+        effective = apply_assignments(config, {'buildings': {
+            'alice': [first], 'bob': [first, second], 'carol': [first],
+        }})
+        points = {reviewer.id: reviewer.assignment_for('points', 'editing').h3_indexes
+                  for reviewer in effective.reviewers}
+        self.assertEqual(points, {'alice': (first,), 'bob': (first, second), 'carol': (second,)})
+
+        # *!*! A point layer without the hex resolution cannot follow.
+        coarse_points = replace(config.layers[1], h3_resolutions=(8,))
+        coarse = replace(config, layers=(config.layers[0], coarse_points))
+        with self.assertRaisesRegex(ValueError, 'follow the building hexes'):
+            validate_options(coarse, AutoAssignOptions(1, 1, resolution=5))
+        validate_options(coarse, AutoAssignOptions(1, 1, resolution=8))
 
     def test_reviewers_missing_from_an_allocation_keep_their_yaml_assignment(self):
         config = self.config()

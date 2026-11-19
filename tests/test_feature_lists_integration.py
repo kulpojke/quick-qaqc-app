@@ -46,6 +46,7 @@ class FeatureListIntegrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         directory = Path(self.temp.name)
         self.write_buildings(directory / 'buildings.parquet')
+        self.write_points(directory / 'points.parquet')
         self.write_cog(directory / 'cog.tif')
         self.config_path = directory / 'project.yaml'
         self.write_config(self.config_path, directory)
@@ -83,14 +84,40 @@ class FeatureListIntegrationTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def write_points(self, path):
+        '''*!*! One point in each cluster: pa, pb, pc.'''
+
+        rows = [f"('p{cluster}', ST_Point({x + 0.0002}, {y + 0.0002}))"
+                for cluster, (x, y) in CLUSTERS.items()]
+        connection = duckdb.connect()
+        try:
+            connection.execute('LOAD spatial')
+            connection.execute(
+                'CREATE TABLE source AS SELECT * FROM (VALUES '
+                + ', '.join(rows) + ') AS features(id, geometry)'
+            )
+            connection.execute('COPY source TO ? (FORMAT PARQUET)', [str(path)])
+        finally:
+            connection.close()
+
     def write_cog(self, path):
         with rasterio.open(path, 'w', driver='GTiff', width=4, height=4, count=1,
                            dtype='uint8', crs='EPSG:4326',
                            transform=from_bounds(0, 0, 4, 4, 4, 4)) as dataset:
             dataset.write(numpy.ones((1, 4, 4), dtype='uint8'))
 
-    def write_config(self, path, directory, caps=None, reviewers=REVIEWERS):
+    def write_config(self, path, directory, caps=None, reviewers=REVIEWERS, points=False):
         caps = caps or {}
+        point_layers = [{
+            'id': 'points',
+            'source': str(directory / 'points.parquet'),
+            'geometry_types': ['Point'],
+            'fields': {'feature_id': 'id'},
+            'h3_resolutions': [5, 8],
+            'modes': ['editing'],
+            'editing': {'move': True},
+        }] if points else []
+        point_assignments = [{'layer': 'points', 'modes': ['editing']}] if points else []
         values = {
             'version': 3,
             'project': {'id': self.project_id, 'name': 'Feature list test'},
@@ -103,7 +130,7 @@ class FeatureListIntegrationTests(unittest.TestCase):
                 'h3_resolutions': [5, 8],
                 'modes': ['annotation', 'editing'],
                 'editing': {'move': True, 'reshape': True, 'create': True},
-            }],
+            }, *point_layers],
             'annotation': {'labels': ['damaged', 'undamaged', 'unknown']},
             'workflow': {
                 'modes': ['annotation', 'editing'],
@@ -113,15 +140,15 @@ class FeatureListIntegrationTests(unittest.TestCase):
                         'layer': 'buildings',
                         'modes': ['annotation', 'editing'],
                         **({'max_features': caps[reviewer]} if reviewer in caps else {}),
-                    }],
+                    }, *point_assignments],
                 } for reviewer in reviewers],
             },
         }
         path.write_text(yaml.safe_dump(values), encoding='utf-8')
 
-    def config_with(self, caps=None, reviewers=REVIEWERS):
+    def config_with(self, caps=None, reviewers=REVIEWERS, points=False):
         path = Path(self.temp.name) / f'project-{uuid4()}.yaml'
-        self.write_config(path, Path(self.temp.name), caps, reviewers)
+        self.write_config(path, Path(self.temp.name), caps, reviewers, points)
         return load_review_config(path)
 
     # *!*! Helpers ----------------------------------------------------------
@@ -206,6 +233,34 @@ WHERE task.project_id = %s AND task.mode = 'annotation'
             effective = saved_assignment_config(connection, self.config)
         third_cells = effective.reviewer(third).assignment_for('buildings', 'annotation').h3_indexes
         self.assertTrue(third_cells)
+
+    def test_points_follow_the_building_hexes_and_top_ups(self):
+        '''*!*! DINS-like points: seen by everyone with the hex, and a new hex brings them.'''
+
+        config = self.config_with(points=True)
+        bootstrap_project(config, AutoAssignOptions(1, 2, resolution=5))
+
+        def points_seen(reviewer):
+            return {feature_id for feature_id in self.visible(reviewer) if feature_id.startswith('p')}
+
+        lists = self.lists()
+        for reviewer in REVIEWERS:
+            clusters = {feature_id[0] for feature_id, holders in lists.items() if reviewer in holders}
+            self.assertEqual(points_seen(reviewer), {f'p{cluster}' for cluster in clusters})
+        self.assertTrue(all(sum(f'p{cluster}' in points_seen(reviewer) for reviewer in REVIEWERS) >= 2
+                            for cluster in CLUSTERS))
+
+        # *!*! A first "unknown" brings a third reviewer; the point in that hex comes along.
+        holder = sorted(lists['a0'])[0]
+        seen_before = {reviewer: points_seen(reviewer) for reviewer in REVIEWERS}
+        self.label(holder, 'a0', 'unknown')
+        third = next(reviewer for reviewer in self.lists()['a0'] if reviewer not in lists['a0'])
+        self.assertNotIn('pa', seen_before[third])
+        self.assertIn('pa', points_seen(third))
+        # *!*! A plain restart gives the same points.
+        before = {reviewer: points_seen(reviewer) for reviewer in REVIEWERS}
+        bootstrap_project(config)
+        self.assertEqual({reviewer: points_seen(reviewer) for reviewer in REVIEWERS}, before)
 
     def test_reshare_after_a_reviewer_leaves_keeps_their_labels_counting(self):
         bootstrap_project(self.config, AutoAssignOptions(1, 2, resolution=5))
