@@ -89,6 +89,10 @@ parent directory; keep local inputs beneath that directory. It always uses
 this checkout's `.env` and `compose.yaml`. Use the same Compose project name
 as the existing deployment (default `damagemap-qaqc`) to reuse its volume.
 
+To set up a new production instance (droplet, Cloudflare Tunnel and Access,
+R2 buckets, nightly backup), see [`new_instance.md`](new_instance.md). Those
+steps have not been tried from start to finish yet.
+
 ### Automatic hex assignments
 
 Select approximately 25% of buildings, in whole hexes, and have each one
