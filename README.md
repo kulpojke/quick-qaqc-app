@@ -301,13 +301,13 @@ retention runs or the worker marks changes as exported.
 
 ### R2 export destination
 
-Set the destination in each project's YAML. Camp uses the same `parquets`
-bucket as its input GeoParquet, under a separate generated-object prefix:
+Set the destination in each project's YAML. Use a private bucket: the
+exports hold reviewer IDs (email addresses) and notes.
 
 ```yaml
 exports:
-  bucket: parquets
-  endpoint_url: https://ed9a058640a1241556bd4d897f168856.r2.cloudflarestorage.com
+  bucket: <bucket>
+  endpoint_url: https://<account id>.r2.cloudflarestorage.com
   prefix: exports
 ```
 
@@ -331,11 +331,10 @@ Cloudflare documents the credentials and endpoint in its
 
 The worker stages validated files in `tmp/`, uploads them, and streams them
 back to verify their size and SHA-256 digest. It publishes a `latest.json`
-manifest only after the entire selected batch verifies. For Camp the manifest
-is at:
+manifest only after the entire selected batch verifies, at:
 
 ```text
-s3://parquets/exports/_damagemap_exports/camp_fire_qaqc/latest.json
+s3://<bucket>/<prefix>/_damagemap_exports/<project id>/latest.json
 ```
 
 The manifest's `streams` map contains newest-first histories for each feature
